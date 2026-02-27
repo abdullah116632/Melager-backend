@@ -2,13 +2,14 @@ import dotenv from 'dotenv';
 import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
-import mongoSanitize from 'express-mongo-sanitize';
-import xss from 'xss-clean';
+// import mongoSanitize from 'express-mongo-sanitize';
+// import xss from 'xss-clean';
 import rateLimit from 'express-rate-limit';
 import connectDB from './config/db.js';
 import { app, server } from './config/socket.js';
 import globalErrorHandler from "./controllers/errorController.js";
 import customError from './utils/customErrorClass.js';
+import mainRouter from './routes/index.js';
 
 dotenv.config();
 
@@ -22,8 +23,8 @@ app.use(helmet());
 app.use(cors(corsOptions));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true, limit: '10kb' }));
-app.use(mongoSanitize());
-app.use(xss());
+// app.use(mongoSanitize());
+// app.use(xss());
 
 const authLimiter = rateLimit({
   max: 20,
@@ -32,6 +33,7 @@ const authLimiter = rateLimit({
 });
 
 app.use('/api/auth', authLimiter);
+app.use('/api', mainRouter);
 
 app.use((req, res, next) => {
   const error = new customError(404, `Can't find ${req.originalUrl} on this server`);
