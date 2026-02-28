@@ -129,7 +129,6 @@ export const verifyManagerOtp = async (req, res, next) => {
           subscriptionEndDate: manager.subscriptionEndDate,
           fullControl: manager.fullControl,
           language: manager.language,
-          verified: manager.verified,
         },
       },
     });
