@@ -21,11 +21,6 @@ const managerSchema = new mongoose.Schema(
       lowercase: true,
       trim: true,
     },
-    address: {
-      type: String,
-      required: [true, 'Address is required'],
-      trim: true,
-    },
     password: {
       type: String,
       required: [true, 'Password is required'],
@@ -40,7 +35,7 @@ const managerSchema = new mongoose.Schema(
       type: Date,
       default: null,
     },
-    isMain: {
+    fullControl: {
       type: Boolean,
       default: true,
     },

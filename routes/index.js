@@ -6,7 +6,7 @@ const router = Router();
 router.get('/', (req, res) => {
   res.status(200).json({
     success: true,
-    message: 'Mela Management API is running.',
+    message: 'Meal Management API is running.',
   });
 });
 
