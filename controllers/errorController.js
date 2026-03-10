@@ -7,7 +7,7 @@ export default (error, req, res, next) => {
     }else if(process.env.NODE_ENV === "production"){
         if(error.code === 11000){
             const errName = error.keyValue.name
-            const message = `There is already a movie with name ${errName}. Please use another name!`
+            const message = `There is already a entry with name ${errName}. Please use another name!`
             error = new customError(400, message);
         }
         

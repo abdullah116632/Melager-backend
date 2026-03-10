@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import authRoutes from './authRoutes.js';
+import consumerRoutes from './consumerRoutes.js';
 import managerRoutes from './managerRoutes.js';
 
 const router = Router();
@@ -13,7 +14,9 @@ router.get('/', (req, res) => {
 
 // Feature routes will be registered here
 router.use('/auth', authRoutes);
+router.use('/consumer', consumerRoutes);
 router.use('/managers', managerRoutes);
+router.use('/manager', managerRoutes);
 // router.use('/meals', mealRoutes);
 
 export default router;
