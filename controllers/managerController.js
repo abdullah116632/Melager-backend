@@ -16,8 +16,41 @@ const formatManager = (manager) => ({
   language: manager.language,
 });
 
+const formatMessMember = (membership) => ({
+  id: membership._id,
+  managerId: membership.manager,
+  consumerId: membership.consumer?._id || null,
+  isActive: membership.isActive,
+  joinedAt: membership.joinedAt,
+  consumer: membership.consumer
+    ? {
+        id: membership.consumer._id,
+        name: membership.consumer.name,
+        phnNumber: membership.consumer.phnNumber,
+        email: membership.consumer.email,
+      }
+    : null,
+});
+
+const formatConsumerRequest = (requestDoc) => ({
+  id: requestDoc._id,
+  status: requestDoc.status,
+  note: requestDoc.note,
+  requestedAt: requestDoc.requestedAt,
+  reviewedAt: requestDoc.reviewedAt,
+  consumer: requestDoc.consumer
+    ? {
+        id: requestDoc.consumer._id,
+        name: requestDoc.consumer.name,
+        phnNumber: requestDoc.consumer.phnNumber,
+        email: requestDoc.consumer.email,
+      }
+    : null,
+});
+
 const escapeRegex = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
+//done
 export const searchManager = async (req, res, next) => {
   try {
     const rawEmail = req.query.email?.toString().trim();
@@ -69,7 +102,7 @@ export const searchManager = async (req, res, next) => {
     next(error);
   }
 };
-
+// done
 export const getManagerProfileById = async (req, res, next) => {
   try {
     const { id } = req.params;
@@ -92,6 +125,66 @@ export const getManagerProfileById = async (req, res, next) => {
       status: 'success',
       data: {
         manager: formatManager(manager),
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// done
+export const getManagerMembersById = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return next(new customError(400, 'Invalid manager id'));
+    }
+
+    if (req.manager._id.toString() !== id) {
+      return next(new customError(403, 'You are not allowed to access these members'));
+    }
+
+    const memberships = await MessMember.find({
+      manager: id,
+      isActive: true,
+    })
+      .populate({ path: 'consumer', select: 'name phnNumber email' })
+      .sort({ joinedAt: -1 });
+
+    res.status(200).json({
+      status: 'success',
+      results: memberships.length,
+      data: {
+        members: memberships.map(formatMessMember),
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const getManagerConsumerRequestsById = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return next(new customError(400, 'Invalid manager id'));
+    }
+
+    if (req.manager._id.toString() !== id) {
+      return next(new customError(403, 'You are not allowed to access these requests'));
+    }
+
+    const requests = await ConsumerRequest.find({ manager: id })
+      .populate({ path: 'consumer', select: 'name phnNumber email' })
+      .sort({ requestedAt: -1 });
+
+    res.status(200).json({
+      status: 'success',
+      results: requests.length,
+      data: {
+        requests: requests.map(formatConsumerRequest),
       },
     });
   } catch (error) {
@@ -211,6 +304,7 @@ export const rejectConsumerRequest = async (req, res, next) => {
   }
 };
 
+// done
 export const createConsumerAndAddToMess = async (req, res, next) => {
   try {
     const rawName = req.body.name?.toString().trim();

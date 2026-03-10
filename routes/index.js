@@ -15,7 +15,6 @@ router.get('/', (req, res) => {
 // Feature routes will be registered here
 router.use('/auth', authRoutes);
 router.use('/consumer', consumerRoutes);
-router.use('/managers', managerRoutes);
 router.use('/manager', managerRoutes);
 // router.use('/meals', mealRoutes);
 
