@@ -3,6 +3,7 @@ import Manager from '../models/managerModel.js';
 import Consumer from '../models/consumerModel.js';
 import ConsumerRequest from '../models/consumerRequestModel.js';
 import MessMember from '../models/messMemberModel.js';
+import MonthlyMeal from '../models/monthlyMealModel.js';
 import customError from '../utils/customErrorClass.js';
 
 const formatManager = (manager) => ({
@@ -49,6 +50,33 @@ const formatConsumerRequest = (requestDoc) => ({
 });
 
 const escapeRegex = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+const ensureCurrentMonthlyMealSheet = async ({ consumerId, managerId }) => {
+  const now = new Date();
+  const month = now.getMonth() + 1;
+  const year = now.getFullYear();
+
+  await MonthlyMeal.findOneAndUpdate(
+    {
+      consumerId,
+      managerId,
+      month,
+      year,
+    },
+    {
+      $setOnInsert: {
+        consumerId,
+        managerId,
+        month,
+        year,
+      },
+    },
+    {
+      upsert: true,
+      new: true,
+    }
+  );
+};
 
 //done
 export const searchManager = async (req, res, next) => {
@@ -163,7 +191,7 @@ export const getManagerMembersById = async (req, res, next) => {
     next(error);
   }
 };
-
+// done
 export const getManagerConsumerRequestsById = async (req, res, next) => {
   try {
     const { id } = req.params;
@@ -191,7 +219,7 @@ export const getManagerConsumerRequestsById = async (req, res, next) => {
     next(error);
   }
 };
-
+// done
 export const acceptConsumerRequest = async (req, res, next) => {
   try {
     const { id } = req.params;
@@ -237,6 +265,11 @@ export const acceptConsumerRequest = async (req, res, next) => {
       }
     );
 
+    await ensureCurrentMonthlyMealSheet({
+      consumerId: requestDoc.consumer,
+      managerId: requestDoc.manager,
+    });
+
     res.status(200).json({
       status: 'success',
       data: {
@@ -251,7 +284,7 @@ export const acceptConsumerRequest = async (req, res, next) => {
     next(error);
   }
 };
-
+// done
 export const rejectConsumerRequest = async (req, res, next) => {
   try {
     const { id } = req.params;
@@ -396,6 +429,11 @@ export const createConsumerAndAddToMess = async (req, res, next) => {
         upsert: true,
       }
     );
+
+    await ensureCurrentMonthlyMealSheet({
+      consumerId: consumer._id,
+      managerId: req.manager._id,
+    });
 
     res.status(consumerCreated ? 201 : 200).json({
       status: 'success',

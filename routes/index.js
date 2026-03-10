@@ -2,6 +2,7 @@ import { Router } from 'express';
 import authRoutes from './authRoutes.js';
 import consumerRoutes from './consumerRoutes.js';
 import managerRoutes from './managerRoutes.js';
+import monthlyMealRoutes from './monthlyMealRoutes.js';
 
 const router = Router();
 
@@ -16,6 +17,7 @@ router.get('/', (req, res) => {
 router.use('/auth', authRoutes);
 router.use('/consumer', consumerRoutes);
 router.use('/manager', managerRoutes);
+router.use('/monthly-meals', monthlyMealRoutes);
 // router.use('/meals', mealRoutes);
 
 export default router;
