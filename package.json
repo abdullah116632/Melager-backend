@@ -1,0 +1,50 @@
+{
+  "name": "mess-manager-backend",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "dotenv -e .env -- cross-env NODE_ENV=development node --enable-source-maps --import tsx ./src/index.ts",
+    "build": "node ./build.mjs",
+    "start": "cross-env NODE_ENV=production node ./dist/index.mjs",
+    "typecheck": "tsc --noEmit",
+    "db:push": "dotenv -e .env -- drizzle-kit push",
+    "db:push:force": "dotenv -e .env -- drizzle-kit push --force",
+    "codegen": "orval --config ./orval.config.ts",
+    "format": "prettier --write \"src/**/*.{ts,tsx}\""
+  },
+  "dependencies": {
+    "bcryptjs": "^3.0.2",
+    "cookie-parser": "^1.4.7",
+    "cors": "^2.8.6",
+    "dotenv": "^16.4.5",
+    "drizzle-orm": "^0.45.2",
+    "express": "^5.1.0",
+    "google-auth-library": "^11.0.0",
+    "jsonwebtoken": "^9.0.2",
+    "pg": "^8.13.1",
+    "pino": "^9.5.0",
+    "pino-http": "^10.3.0",
+    "pino-pretty": "^11.3.0",
+    "resend": "^4.0.0",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "@types/bcryptjs": "^2.4.6",
+    "@types/cookie-parser": "^1.4.9",
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.0",
+    "@types/jsonwebtoken": "^9.0.7",
+    "@types/node": "^25.3.3",
+    "@types/pg": "^8.11.10",
+    "cross-env": "^7.0.3",
+    "dotenv-cli": "^11.0.0",
+    "drizzle-kit": "0.31.7",
+    "esbuild": "^0.27.3",
+    "esbuild-plugin-pino": "^1.1.0",
+    "orval": "^8.9.1",
+    "prettier": "^3.6.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.3"
+  }
+}
