@@ -9,7 +9,7 @@ the **Continue with Google** button.
    the app name and support email, then add your own Google account under
    **Test users** while the app is still in testing.
 3. Go to **Credentials → Create credentials → OAuth client ID** and create:
-   - an **Android** client with package name `com.musa116632.mobile`, plus the
+   - an **Android** client with package name `com.melager.mobile`, plus the
      SHA-1 certificate fingerprint used to sign the Android app;
    - an **iOS** client when you build for iPhone;
    - a **Web application** client when you run the web app. Add its actual

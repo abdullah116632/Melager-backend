@@ -14,6 +14,19 @@ import { sendMonthlySummaryEmail } from "../lib/email.js";
 import { getMessContext } from "../lib/mess-access.js";
 
 const router = Router();
+const APP_TIME_ZONE = process.env.APP_TIME_ZONE ?? "Asia/Dhaka";
+
+function dateInAppTimeZone(value: Date): string {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: APP_TIME_ZONE,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(value);
+  const get = (type: Intl.DateTimeFormatPartTypes) =>
+    parts.find((part) => part.type === type)?.value ?? "";
+  return `${get("year")}-${get("month")}-${get("day")}`;
+}
 
 // GET /api/mess/data/:yearMonth?messId=X
 router.get("/mess/data/:yearMonth", requireAuth, async (req: AuthedRequest, res) => {
@@ -32,8 +45,11 @@ router.get("/mess/data/:yearMonth", requireAuth, async (req: AuthedRequest, res)
   }
 
   const [year, month] = yearMonth.split("-").map(Number);
-  const startDate = new Date(year, month - 1, 1);
-  const endDate = new Date(year, month, 1);
+  // Read a one-day UTC buffer on each side, then keep rows whose local date
+  // belongs to the requested month. This prevents midnight deposits from
+  // moving into an adjacent month when the server itself runs in UTC.
+  const startDate = new Date(Date.UTC(year, month - 1, 1) - 24 * 60 * 60 * 1000);
+  const endDate = new Date(Date.UTC(year, month, 1) + 24 * 60 * 60 * 1000);
 
   const [consumers, mealRows, expenseRows, depositEntryRows] = await Promise.all([
     db
@@ -82,8 +98,10 @@ router.get("/mess/data/:yearMonth", requireAuth, async (req: AuthedRequest, res)
 
   const deposits: Record<string, Record<string, number>> = {};
   for (const row of depositEntryRows) {
+    const localDate = dateInAppTimeZone(row.depositedAt);
+    if (!localDate.startsWith(`${yearMonth}-`)) continue;
     const cid = row.consumerId.toString();
-    const day = row.depositedAt.getDate().toString();
+    const day = Number(localDate.slice(8, 10)).toString();
     if (!deposits[cid]) deposits[cid] = {};
     deposits[cid][day] = (deposits[cid][day] ?? 0) + row.amount;
   }
