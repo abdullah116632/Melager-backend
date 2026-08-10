@@ -14,5 +14,16 @@
     "forceConsistentCasingInFileNames": true,
     "types": ["node"]
   },
-  "include": ["src/**/*", "db/**/*", "zod/**/*", "drizzle.config.ts"]
+  "include": [
+    "app.ts",
+    "index.ts",
+    "controllers/**/*",
+    "routes/**/*",
+    "utils/**/*",
+    "lib/**/*",
+    "middleware/**/*",
+    "db/**/*",
+    "zod/**/*",
+    "drizzle.config.ts"
+  ]
 }

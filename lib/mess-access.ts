@@ -1,6 +1,6 @@
 import { and, eq } from "drizzle-orm";
 
-import { db, consumersTable, messesTable } from "../../db/index.js";
+import { db, consumersTable, messesTable } from "../db/dbConfig.js";
 
 /**
  * Resolve a user's membership and role in one database round trip.
@@ -30,12 +30,20 @@ export async function getMessContext(userId: number, messId: number) {
     .limit(1);
 
   if (!row) {
-    return { mess: null, role: null as "admin" | "member" | null, consumerId: null };
+    return {
+      mess: null,
+      role: null as "admin" | "member" | null,
+      consumerId: null,
+    };
   }
 
   const isOwner = row.adminUserId === userId;
   if (!isOwner && row.consumerId == null) {
-    return { mess: null, role: null as "admin" | "member" | null, consumerId: null };
+    return {
+      mess: null,
+      role: null as "admin" | "member" | null,
+      consumerId: null,
+    };
   }
 
   const mess = {

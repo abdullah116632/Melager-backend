@@ -4,14 +4,14 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "dotenv -e .env -- cross-env NODE_ENV=development node --enable-source-maps --import tsx ./src/index.ts",
+    "dev": "dotenv -e .env -- cross-env NODE_ENV=development node --enable-source-maps --import tsx ./index.ts",
     "build": "node ./build.mjs",
     "start": "cross-env NODE_ENV=production node ./dist/index.mjs",
     "typecheck": "tsc --noEmit",
     "db:push": "dotenv -e .env -- drizzle-kit push",
     "db:push:force": "dotenv -e .env -- drizzle-kit push --force",
     "codegen": "orval --config ./orval.config.ts",
-    "format": "prettier --write \"src/**/*.{ts,tsx}\""
+    "format": "prettier --write \"{app,index}.ts\" \"{controllers,routes,utils,lib,middleware}/**/*.{ts,tsx}\""
   },
   "dependencies": {
     "bcryptjs": "^3.0.2",

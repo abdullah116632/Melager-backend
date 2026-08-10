@@ -61,9 +61,13 @@ export async function sendPasswordResetEmail(
   });
 }
 
-type SecurityAction = "change_password" | "update_email" | "add_admin" | "add_co_admin";
+type SecurityAction =
+  "change_password" | "update_email" | "add_admin" | "add_co_admin";
 
-const actionMeta: Record<SecurityAction, { subject: string; heading: string; body: string; accent: string; bg: string }> = {
+const actionMeta: Record<
+  SecurityAction,
+  { subject: string; heading: string; body: string; accent: string; bg: string }
+> = {
   change_password: {
     subject: "verification code — change your password",
     heading: "Change Password Request",
@@ -176,15 +180,21 @@ export async function sendMonthlySummaryEmail(
 ): Promise<void> {
   const resend = getResend();
 
-  const [year, month] = yearMonth.split('-');
-  const monthLabel = new Date(parseInt(year!), parseInt(month!) - 1, 1)
-    .toLocaleString('en-US', { month: 'long', year: 'numeric' });
+  const [year, month] = yearMonth.split("-");
+  const monthLabel = new Date(
+    parseInt(year!),
+    parseInt(month!) - 1,
+    1,
+  ).toLocaleString("en-US", { month: "long", year: "numeric" });
 
   const fmt = (n: number) =>
-    n.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    n.toLocaleString("en-IN", {
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    });
 
-  const balColor = summary.balance >= 0 ? '#059669' : '#DC2626';
-  const balSign  = summary.balance >= 0 ? '+' : '';
+  const balColor = summary.balance >= 0 ? "#059669" : "#DC2626";
+  const balSign = summary.balance >= 0 ? "+" : "";
 
   await resend.emails.send({
     from: FROM,
@@ -224,7 +234,7 @@ export async function sendMonthlySummaryEmail(
             </tr>
             <tr style="background:#0F766E;border-top:1px solid #0F766E;">
               <td style="padding:12px 14px;color:#fff;font-size:15px;font-weight:700;">Balance</td>
-              <td style="padding:12px 14px;font-size:15px;font-weight:700;text-align:right;color:${balColor === '#059669' ? '#A7F3D0' : '#FCA5A5'};">${balSign}৳${fmt(Math.abs(summary.balance))}</td>
+              <td style="padding:12px 14px;font-size:15px;font-weight:700;text-align:right;color:${balColor === "#059669" ? "#A7F3D0" : "#FCA5A5"};">${balSign}৳${fmt(Math.abs(summary.balance))}</td>
             </tr>
           </tbody>
         </table>
@@ -236,11 +246,12 @@ export async function sendMonthlySummaryEmail(
           <p style="margin:4px 0;color:#374151;font-size:13px;">Total expenses: <strong>৳${fmt(summary.totalExpenses)}</strong></p>
         </div>
 
-        ${summary.balance < 0
-          ? `<div style="background:#FEF2F2;border:1px solid #FECACA;border-radius:10px;padding:14px 18px;margin-bottom:24px;">
+        ${
+          summary.balance < 0
+            ? `<div style="background:#FEF2F2;border:1px solid #FECACA;border-radius:10px;padding:14px 18px;margin-bottom:24px;">
                <p style="margin:0;color:#DC2626;font-size:14px;font-weight:600;">⚠️ You have an outstanding balance of ৳${fmt(Math.abs(summary.balance))}. Please deposit to clear it.</p>
              </div>`
-          : `<div style="background:#F0FDF4;border:1px solid #BBF7D0;border-radius:10px;padding:14px 18px;margin-bottom:24px;">
+            : `<div style="background:#F0FDF4;border:1px solid #BBF7D0;border-radius:10px;padding:14px 18px;margin-bottom:24px;">
                <p style="margin:0;color:#059669;font-size:14px;font-weight:600;">✓ You're all clear! You have a positive balance of ৳${fmt(summary.balance)}.</p>
              </div>`
         }

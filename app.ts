@@ -1,7 +1,12 @@
-import express, { type Express, type Request, type Response, type NextFunction } from "express";
+import express, {
+  type Express,
+  type Request,
+  type Response,
+  type NextFunction,
+} from "express";
 import cors from "cors";
 import { pinoHttp } from "pino-http";
-import router from "./routes/index.js";
+import router from "./routes/indexRoute.js";
 import { logger } from "./lib/logger.js";
 
 const app: Express = express();

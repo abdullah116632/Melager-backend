@@ -1,4 +1,14 @@
-import { pgTable, serial, text, integer, boolean, timestamp, jsonb, unique, index } from "drizzle-orm/pg-core";
+import {
+  pgTable,
+  serial,
+  text,
+  integer,
+  boolean,
+  timestamp,
+  jsonb,
+  unique,
+  index,
+} from "drizzle-orm/pg-core";
 
 export const usersTable = pgTable("users", {
   id: serial("id").primaryKey(),
@@ -161,7 +171,9 @@ export const mealControlTable = pgTable(
   "meal_control",
   {
     id: serial("id").primaryKey(),
-    messId: integer("mess_id").notNull().references(() => messesTable.id),
+    messId: integer("mess_id")
+      .notNull()
+      .references(() => messesTable.id),
     date: text("date").notNull(),
     breakfastEnabled: boolean("breakfast_enabled").notNull().default(true),
     lunchEnabled: boolean("lunch_enabled").notNull().default(true),
@@ -187,8 +199,12 @@ export const mealOptOutsTable = pgTable(
   "meal_opt_outs",
   {
     id: serial("id").primaryKey(),
-    messId: integer("mess_id").notNull().references(() => messesTable.id),
-    consumerId: integer("consumer_id").notNull().references(() => consumersTable.id),
+    messId: integer("mess_id")
+      .notNull()
+      .references(() => messesTable.id),
+    consumerId: integer("consumer_id")
+      .notNull()
+      .references(() => consumersTable.id),
     date: text("date").notNull(),
     mealType: text("meal_type").notNull(),
     createdAt: timestamp("created_at").defaultNow().notNull(),
@@ -203,8 +219,12 @@ export const depositEntriesTable = pgTable(
   "deposit_entries",
   {
     id: serial("id").primaryKey(),
-    messId: integer("mess_id").notNull().references(() => messesTable.id),
-    consumerId: integer("consumer_id").notNull().references(() => consumersTable.id),
+    messId: integer("mess_id")
+      .notNull()
+      .references(() => messesTable.id),
+    consumerId: integer("consumer_id")
+      .notNull()
+      .references(() => consumersTable.id),
     amount: integer("amount").notNull(),
     depositedAt: timestamp("deposited_at").notNull().defaultNow(),
     note: text("note"),

@@ -20,17 +20,18 @@ npm run dev                # http://localhost:5000
 - `npm run codegen` — regenerate Zod schemas from `openapi.yaml`
 - `npm run typecheck` — `tsc --noEmit`
 
-## Layout
+## Flat layout
 
 ```
-src/
-  app.ts                Express setup (middleware, routes, error handler)
-  index.ts              Entry: reads PORT, starts listening
-  routes/               Auth, mess, data, settings, meal-schedule, deposit-entries, health
-  lib/                  logger, email helpers
-  middleware/auth.ts    requireAuth + JWT helpers
+app.ts                  Express setup (middleware, routes, error handler)
+index.ts                Entry: reads PORT, starts listening
+routes/                 Auth, mess, data, settings, meal-schedule, deposit-entries, health
+controllers/            Request handlers and business logic used by routes
+utils/                  Reusable stateless helpers shared by controllers
+lib/                    Logger, email and mess-access helpers
+middleware/auth.ts      Authentication middleware and JWT helpers
 db/
-  index.ts              Drizzle client (loads DATABASE_URL)
+  dbConfig.ts           PostgreSQL pool and Drizzle client configuration
   schema/index.ts       All Drizzle table definitions
 zod/
   generated/            Auto-generated Zod schemas + types from OpenAPI spec

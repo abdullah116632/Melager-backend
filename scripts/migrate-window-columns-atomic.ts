@@ -1,5 +1,5 @@
 import "dotenv/config";
-import { pool } from "../db/index.js";
+import { pool } from "../db/dbConfig.js";
 
 async function main() {
   const client = await pool.connect();
@@ -36,7 +36,9 @@ async function main() {
          OR (dinner_window ->> 'end') IS DISTINCT FROM dinner_end_window
     `);
     if ((verification.rows[0]?.mismatches ?? 1) !== 0) {
-      throw new Error("Window-column verification failed; JSON columns were retained");
+      throw new Error(
+        "Window-column verification failed; JSON columns were retained",
+      );
     }
 
     await client.query(`
@@ -46,7 +48,9 @@ async function main() {
         DROP COLUMN dinner_window
     `);
     await client.query("COMMIT");
-    console.log("Migrated meal windows from 3 JSON columns to 6 atomic text columns");
+    console.log(
+      "Migrated meal windows from 3 JSON columns to 6 atomic text columns",
+    );
   } catch (error) {
     await client.query("ROLLBACK");
     throw error;

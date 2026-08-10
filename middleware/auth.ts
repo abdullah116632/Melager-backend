@@ -1,7 +1,8 @@
 import { Request, Response, NextFunction } from "express";
 import jwt from "jsonwebtoken";
 
-const SECRET = process.env.SESSION_SECRET ?? "dev-secret-please-set-session-secret";
+const SECRET =
+  process.env.SESSION_SECRET ?? "dev-secret-please-set-session-secret";
 
 export interface AuthPayload {
   userId: number;

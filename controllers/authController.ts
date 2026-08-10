@@ -1,5 +1,4 @@
-import { Router } from "express";
-import bcrypt from "bcryptjs";
+import type { Request, Response } from "express";
 import { OAuth2Client } from "google-auth-library";
 import { randomUUID } from "node:crypto";
 import { eq, and, inArray } from "drizzle-orm";
@@ -11,26 +10,27 @@ import {
   otpVerificationsTable,
   passwordResetsTable,
   memberRequestsTable,
-} from "../../db/index.js";
-import { signToken, requireAuth, type AuthedRequest } from "../middleware/auth.js";
+} from "../db/dbConfig.js";
+import { signToken, type AuthedRequest } from "../middleware/auth.js";
 import { sendOtpEmail, sendPasswordResetEmail } from "../lib/email.js";
+import {
+  createOtpChallenge,
+  getConfiguredGoogleClientIds,
+  isOtpExpired,
+  normalizeEmail,
+  normalizeOtp,
+  toPublicAuthUser,
+} from "../utils/authUtils.js";
+import {
+  hashPassword,
+  isPasswordValid,
+  verifyPassword,
+} from "../utils/passwordUtils.js";
 
-const router = Router();
 const googleClient = new OAuth2Client();
 
-function configuredGoogleClientIds(): string[] {
-  return (process.env.GOOGLE_CLIENT_IDS ?? "")
-    .split(",")
-    .map((clientId) => clientId.trim())
-    .filter(Boolean);
-}
-
-function generateOtp(): string {
-  return Math.floor(100000 + Math.random() * 900000).toString();
-}
-
 // POST /api/auth/signup — stores pending verification, sends OTP email
-router.post("/auth/signup", async (req, res) => {
+export const signup = async (req: Request, res: Response) => {
   const { email, name, password, mobileNumber } = req.body ?? {};
   if (!email || !name || !password) {
     res.status(400).json({ error: "email, name and password are required" });
@@ -40,12 +40,15 @@ router.post("/auth/signup", async (req, res) => {
     res.status(400).json({ error: "Mobile number must be exactly 11 digits" });
     return;
   }
-  if ((password as string).length < 6) {
+  if (!isPasswordValid(password as string)) {
     res.status(400).json({ error: "Password must be at least 6 characters" });
     return;
   }
-  const normalizedEmail = (email as string).toLowerCase().trim();
-  const normalizedMobile = mobileNumber ? (mobileNumber as string).trim() : undefined;
+  const normalizedEmail = normalizeEmail(email as string);
+  const normalizedMobile = mobileNumber
+    ? (mobileNumber as string).trim()
+    : undefined;
+  const normalizedName = (name as string).trim();
 
   const existing = await db
     .select({ id: usersTable.id })
@@ -57,16 +60,15 @@ router.post("/auth/signup", async (req, res) => {
     return;
   }
 
-  const otp = generateOtp();
-  const passwordHash = await bcrypt.hash(password, 10);
-  const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 min
+  const { otp, expiresAt } = createOtpChallenge();
+  const passwordHash = await hashPassword(password as string);
 
   await db
     .delete(otpVerificationsTable)
     .where(eq(otpVerificationsTable.email, normalizedEmail));
   await db.insert(otpVerificationsTable).values({
     email: normalizedEmail,
-    name: (name as string).trim(),
+    name: normalizedName,
     passwordHash,
     mobileNumber: normalizedMobile,
     otp,
@@ -74,7 +76,7 @@ router.post("/auth/signup", async (req, res) => {
   });
 
   try {
-    await sendOtpEmail(normalizedEmail, (name as string).trim(), otp);
+    await sendOtpEmail(normalizedEmail, normalizedName, otp);
   } catch (err) {
     req.log.error({ err }, "Failed to send OTP email");
     res
@@ -84,16 +86,16 @@ router.post("/auth/signup", async (req, res) => {
   }
 
   res.json({ message: "OTP sent", pendingEmail: normalizedEmail });
-});
+};
 
 // POST /api/auth/verify-otp — verifies OTP, creates user, returns token
-router.post("/auth/verify-otp", async (req, res) => {
+export const verifyOtp = async (req: Request, res: Response) => {
   const { email, otp } = req.body ?? {};
   if (!email || !otp) {
     res.status(400).json({ error: "email and otp are required" });
     return;
   }
-  const normalizedEmail = (email as string).toLowerCase().trim();
+  const normalizedEmail = normalizeEmail(email as string);
 
   const [pending] = await db
     .select()
@@ -107,14 +109,14 @@ router.post("/auth/verify-otp", async (req, res) => {
       .json({ error: "No pending verification. Please sign up again." });
     return;
   }
-  if (new Date() > pending.expiresAt) {
+  if (isOtpExpired(pending.expiresAt)) {
     await db
       .delete(otpVerificationsTable)
       .where(eq(otpVerificationsTable.email, normalizedEmail));
     res.status(410).json({ error: "Code expired. Please sign up again." });
     return;
   }
-  if (pending.otp !== (otp as string).trim()) {
+  if (pending.otp !== normalizeOtp(otp as string)) {
     res.status(401).json({ error: "Incorrect code. Please try again." });
     return;
   }
@@ -127,7 +129,12 @@ router.post("/auth/verify-otp", async (req, res) => {
       passwordHash: pending.passwordHash,
       mobileNumber: pending.mobileNumber ?? null,
     })
-    .returning({ id: usersTable.id, email: usersTable.email, name: usersTable.name, mobileNumber: usersTable.mobileNumber });
+    .returning({
+      id: usersTable.id,
+      email: usersTable.email,
+      name: usersTable.name,
+      mobileNumber: usersTable.mobileNumber,
+    });
 
   await db
     .delete(otpVerificationsTable)
@@ -135,16 +142,16 @@ router.post("/auth/verify-otp", async (req, res) => {
 
   const token = signToken(user.id);
   res.json({ token, user });
-});
+};
 
 // POST /api/auth/resend-otp — regenerates and resends OTP
-router.post("/auth/resend-otp", async (req, res) => {
+export const resendOtp = async (req: Request, res: Response) => {
   const { email } = req.body ?? {};
   if (!email) {
     res.status(400).json({ error: "email is required" });
     return;
   }
-  const normalizedEmail = (email as string).toLowerCase().trim();
+  const normalizedEmail = normalizeEmail(email as string);
 
   const [pending] = await db
     .select()
@@ -159,8 +166,7 @@ router.post("/auth/resend-otp", async (req, res) => {
     return;
   }
 
-  const otp = generateOtp();
-  const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
+  const { otp, expiresAt } = createOtpChallenge();
 
   await db
     .update(otpVerificationsTable)
@@ -176,16 +182,16 @@ router.post("/auth/resend-otp", async (req, res) => {
   }
 
   res.json({ message: "OTP resent" });
-});
+};
 
 // POST /api/auth/forgot-password — sends OTP reset code to registered email
-router.post("/auth/forgot-password", async (req, res) => {
+export const forgotPassword = async (req: Request, res: Response) => {
   const { email } = req.body ?? {};
   if (!email) {
     res.status(400).json({ error: "email is required" });
     return;
   }
-  const normalizedEmail = (email as string).toLowerCase().trim();
+  const normalizedEmail = normalizeEmail(email as string);
 
   const [user] = await db
     .select({ id: usersTable.id, name: usersTable.name })
@@ -198,8 +204,7 @@ router.post("/auth/forgot-password", async (req, res) => {
     return;
   }
 
-  const otp = generateOtp();
-  const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
+  const { otp, expiresAt } = createOtpChallenge();
 
   await db
     .delete(passwordResetsTable)
@@ -212,21 +217,23 @@ router.post("/auth/forgot-password", async (req, res) => {
     await sendPasswordResetEmail(normalizedEmail, user.name, otp);
   } catch (err) {
     req.log.error({ err }, "Failed to send password reset email");
-    res.status(500).json({ error: "Failed to send reset email. Please try again." });
+    res
+      .status(500)
+      .json({ error: "Failed to send reset email. Please try again." });
     return;
   }
 
   res.json({ message: "Reset code sent", pendingEmail: normalizedEmail });
-});
+};
 
 // POST /api/auth/resend-reset-otp — resends password reset OTP
-router.post("/auth/resend-reset-otp", async (req, res) => {
+export const resendResetOtp = async (req: Request, res: Response) => {
   const { email } = req.body ?? {};
   if (!email) {
     res.status(400).json({ error: "email is required" });
     return;
   }
-  const normalizedEmail = (email as string).toLowerCase().trim();
+  const normalizedEmail = normalizeEmail(email as string);
 
   const [pending] = await db
     .select()
@@ -235,7 +242,9 @@ router.post("/auth/resend-reset-otp", async (req, res) => {
     .limit(1);
 
   if (!pending) {
-    res.status(404).json({ error: "No pending reset. Please request a new code." });
+    res
+      .status(404)
+      .json({ error: "No pending reset. Please request a new code." });
     return;
   }
 
@@ -245,8 +254,7 @@ router.post("/auth/resend-reset-otp", async (req, res) => {
     .where(eq(usersTable.email, normalizedEmail))
     .limit(1);
 
-  const otp = generateOtp();
-  const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
+  const { otp, expiresAt } = createOtpChallenge();
 
   await db
     .update(passwordResetsTable)
@@ -262,20 +270,20 @@ router.post("/auth/resend-reset-otp", async (req, res) => {
   }
 
   res.json({ message: "Reset code resent" });
-});
+};
 
 // POST /api/auth/reset-password — verifies OTP and updates password
-router.post("/auth/reset-password", async (req, res) => {
+export const resetPassword = async (req: Request, res: Response) => {
   const { email, otp, newPassword } = req.body ?? {};
   if (!email || !otp || !newPassword) {
     res.status(400).json({ error: "email, otp and newPassword are required" });
     return;
   }
-  if ((newPassword as string).length < 6) {
+  if (!isPasswordValid(newPassword as string)) {
     res.status(400).json({ error: "Password must be at least 6 characters" });
     return;
   }
-  const normalizedEmail = (email as string).toLowerCase().trim();
+  const normalizedEmail = normalizeEmail(email as string);
 
   const [pending] = await db
     .select()
@@ -284,22 +292,24 @@ router.post("/auth/reset-password", async (req, res) => {
     .limit(1);
 
   if (!pending) {
-    res.status(404).json({ error: "No pending reset. Please request a new code." });
+    res
+      .status(404)
+      .json({ error: "No pending reset. Please request a new code." });
     return;
   }
-  if (new Date() > pending.expiresAt) {
+  if (isOtpExpired(pending.expiresAt)) {
     await db
       .delete(passwordResetsTable)
       .where(eq(passwordResetsTable.email, normalizedEmail));
     res.status(410).json({ error: "Code expired. Please request a new one." });
     return;
   }
-  if (pending.otp !== (otp as string).trim()) {
+  if (pending.otp !== normalizeOtp(otp as string)) {
     res.status(401).json({ error: "Incorrect code. Please try again." });
     return;
   }
 
-  const passwordHash = await bcrypt.hash(newPassword, 10);
+  const passwordHash = await hashPassword(newPassword as string);
   await db
     .update(usersTable)
     .set({ passwordHash })
@@ -310,10 +320,10 @@ router.post("/auth/reset-password", async (req, res) => {
     .where(eq(passwordResetsTable.email, normalizedEmail));
 
   res.json({ message: "Password reset successfully" });
-});
+};
 
 // POST /api/auth/login
-router.post("/auth/login", async (req, res) => {
+export const login = async (req: Request, res: Response) => {
   const { email, password } = req.body ?? {};
   if (!email || !password) {
     res.status(400).json({ error: "email and password are required" });
@@ -322,31 +332,31 @@ router.post("/auth/login", async (req, res) => {
   const [user] = await db
     .select()
     .from(usersTable)
-    .where(eq(usersTable.email, (email as string).toLowerCase()))
+    .where(eq(usersTable.email, normalizeEmail(email as string)))
     .limit(1);
   if (!user) {
     res.status(401).json({ error: "Invalid email or password" });
     return;
   }
-  const valid = await bcrypt.compare(password, user.passwordHash);
+  const valid = await verifyPassword(password as string, user.passwordHash);
   if (!valid) {
     res.status(401).json({ error: "Invalid email or password" });
     return;
   }
   const token = signToken(user.id);
-  res.json({ token, user: { id: user.id, email: user.email, name: user.name, mobileNumber: user.mobileNumber } });
-});
+  res.json({ token, user: toPublicAuthUser(user) });
+};
 
 // POST /api/auth/google — verifies the Google ID token on the server, then
 // signs in an existing account or creates a new verified account.
-router.post("/auth/google", async (req, res) => {
+export const googleLogin = async (req: Request, res: Response) => {
   const { idToken } = req.body ?? {};
   if (!idToken || typeof idToken !== "string") {
     res.status(400).json({ error: "Google ID token is required" });
     return;
   }
 
-  const audiences = configuredGoogleClientIds();
+  const audiences = getConfiguredGoogleClientIds();
   if (audiences.length === 0) {
     req.log.error("GOOGLE_CLIENT_IDS is not configured");
     res.status(503).json({ error: "Google sign-in is not configured yet" });
@@ -354,14 +364,19 @@ router.post("/auth/google", async (req, res) => {
   }
 
   try {
-    const ticket = await googleClient.verifyIdToken({ idToken, audience: audiences });
+    const ticket = await googleClient.verifyIdToken({
+      idToken,
+      audience: audiences,
+    });
     const payload = ticket.getPayload();
     if (!payload?.sub || !payload.email || payload.email_verified !== true) {
-      res.status(401).json({ error: "Your Google account email could not be verified" });
+      res
+        .status(401)
+        .json({ error: "Your Google account email could not be verified" });
       return;
     }
 
-    const email = payload.email.toLowerCase().trim();
+    const email = normalizeEmail(payload.email);
     let [user] = await db
       .select()
       .from(usersTable)
@@ -376,8 +391,13 @@ router.post("/auth/google", async (req, res) => {
         .limit(1);
 
       if (emailUser) {
-        if (emailUser.googleSubject && emailUser.googleSubject !== payload.sub) {
-          res.status(409).json({ error: "This email is already linked to another Google account" });
+        if (
+          emailUser.googleSubject &&
+          emailUser.googleSubject !== payload.sub
+        ) {
+          res.status(409).json({
+            error: "This email is already linked to another Google account",
+          });
           return;
         }
         [user] = await db
@@ -386,8 +406,9 @@ router.post("/auth/google", async (req, res) => {
           .where(eq(usersTable.id, emailUser.id))
           .returning();
       } else {
-        const fallbackName = payload.name?.trim() || email.split("@")[0] || "Google User";
-        const passwordHash = await bcrypt.hash(`google:${randomUUID()}`, 10);
+        const fallbackName =
+          payload.name?.trim() || email.split("@")[0] || "Google User";
+        const passwordHash = await hashPassword(`google:${randomUUID()}`);
         [user] = await db
           .insert(usersTable)
           .values({
@@ -403,61 +424,66 @@ router.post("/auth/google", async (req, res) => {
     const token = signToken(user.id);
     res.json({
       token,
-      user: { id: user.id, email: user.email, name: user.name, mobileNumber: user.mobileNumber },
+      user: toPublicAuthUser(user),
     });
   } catch (err) {
     req.log.warn({ err }, "Google ID token verification failed");
     res.status(401).json({ error: "Google sign-in could not be verified" });
   }
-});
+};
 
 // GET /api/auth/me — returns all messes + all pending/rejected requests
-router.get("/auth/me", requireAuth, async (req: AuthedRequest, res) => {
+export const me = async (req: AuthedRequest, res: Response) => {
   const userId = req.auth!.userId;
 
   // These datasets are independent. Fetch them in parallel and join the
   // membership/request names in SQL to avoid 4-6 sequential Neon round trips.
-  const [userRows, adminMesses, memberships, requestRecords] = await Promise.all([
-    db
-      .select({
-        id: usersTable.id,
-        email: usersTable.email,
-        name: usersTable.name,
-        mobileNumber: usersTable.mobileNumber,
-      })
-      .from(usersTable)
-      .where(eq(usersTable.id, userId))
-      .limit(1),
-    db
-      .select({ id: messesTable.id, name: messesTable.name, messKey: messesTable.messKey })
-      .from(messesTable)
-      .where(eq(messesTable.adminUserId, userId)),
-    db
-      .select({
-        id: messesTable.id,
-        name: messesTable.name,
-        messKey: messesTable.messKey,
-        isAdmin: consumersTable.isAdmin,
-      })
-      .from(consumersTable)
-      .innerJoin(messesTable, eq(consumersTable.messId, messesTable.id))
-      .where(eq(consumersTable.userId, userId)),
-    db
-      .select({
-        id: memberRequestsTable.id,
-        messId: memberRequestsTable.messId,
-        messName: messesTable.name,
-        status: memberRequestsTable.status,
-      })
-      .from(memberRequestsTable)
-      .innerJoin(messesTable, eq(memberRequestsTable.messId, messesTable.id))
-      .where(
-        and(
-          eq(memberRequestsTable.userId, userId),
-          inArray(memberRequestsTable.status, ["pending", "rejected"]),
+  const [userRows, adminMesses, memberships, requestRecords] =
+    await Promise.all([
+      db
+        .select({
+          id: usersTable.id,
+          email: usersTable.email,
+          name: usersTable.name,
+          mobileNumber: usersTable.mobileNumber,
+        })
+        .from(usersTable)
+        .where(eq(usersTable.id, userId))
+        .limit(1),
+      db
+        .select({
+          id: messesTable.id,
+          name: messesTable.name,
+          messKey: messesTable.messKey,
+        })
+        .from(messesTable)
+        .where(eq(messesTable.adminUserId, userId)),
+      db
+        .select({
+          id: messesTable.id,
+          name: messesTable.name,
+          messKey: messesTable.messKey,
+          isAdmin: consumersTable.isAdmin,
+        })
+        .from(consumersTable)
+        .innerJoin(messesTable, eq(consumersTable.messId, messesTable.id))
+        .where(eq(consumersTable.userId, userId)),
+      db
+        .select({
+          id: memberRequestsTable.id,
+          messId: memberRequestsTable.messId,
+          messName: messesTable.name,
+          status: memberRequestsTable.status,
+        })
+        .from(memberRequestsTable)
+        .innerJoin(messesTable, eq(memberRequestsTable.messId, messesTable.id))
+        .where(
+          and(
+            eq(memberRequestsTable.userId, userId),
+            inArray(memberRequestsTable.status, ["pending", "rejected"]),
+          ),
         ),
-      ),
-  ]);
+    ]);
 
   const user = userRows[0];
   if (!user) {
@@ -465,12 +491,15 @@ router.get("/auth/me", requireAuth, async (req: AuthedRequest, res) => {
     return;
   }
 
-  const messMap = new Map<number, {
-    id: number;
-    name: string;
-    messKey: string;
-    role: "admin" | "member";
-  }>();
+  const messMap = new Map<
+    number,
+    {
+      id: number;
+      name: string;
+      messKey: string;
+      role: "admin" | "member";
+    }
+  >();
   for (const mess of adminMesses) {
     messMap.set(mess.id, { ...mess, role: "admin" });
   }
@@ -494,6 +523,4 @@ router.get("/auth/me", requireAuth, async (req: AuthedRequest, res) => {
   }));
 
   res.json({ user, messes, requests });
-});
-
-export default router;
+};
