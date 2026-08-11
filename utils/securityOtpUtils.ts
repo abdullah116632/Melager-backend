@@ -8,6 +8,7 @@ export const SECURITY_ACTIONS = [
   "update_email",
   "add_admin",
   "add_co_admin",
+  "remove_self_admin",
 ] as const;
 
 export type SecurityAction = (typeof SECURITY_ACTIONS)[number];
@@ -52,7 +53,6 @@ export const verifyPendingSecurityOtp = async (
     };
   }
   if (isOtpExpired(pending.expiresAt)) {
-    await clearSecurityOtp(userId, action);
     return { error: "Code expired. Please request a new one.", expired: true };
   }
   if (pending.otp !== normalizeOtp(otpInput)) {

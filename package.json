@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "dotenv -e .env -- cross-env NODE_ENV=development node --enable-source-maps --import tsx ./index.ts",
+    "dev": "dotenv -e .env -- cross-env NODE_ENV=development tsx watch ./index.ts",
     "build": "node ./build.mjs",
     "start": "cross-env NODE_ENV=production node ./dist/index.mjs",
     "typecheck": "tsc --noEmit",

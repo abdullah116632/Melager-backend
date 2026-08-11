@@ -1,5 +1,5 @@
 import type { Response } from "express";
-import { eq, and } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import {
   db,
   usersTable,
@@ -17,6 +17,7 @@ import {
   verifyPassword,
 } from "../utils/passwordUtils.js";
 import { resolvePrimaryAdminAccess } from "../utils/primaryAdminAccessUtils.js";
+import { resolveMessAccess } from "../utils/messAccessUtils.js";
 import {
   clearSecurityOtp,
   getLinkedConsumer,
@@ -30,7 +31,7 @@ import {
 // POST /api/settings/security/request-otp
 export const requestSecurityOtp = async (req: AuthedRequest, res: Response) => {
   const userId = req.auth!.userId;
-  const { action, currentPassword, payload } = req.body ?? {};
+  const { action, currentPassword, newPassword, payload } = req.body ?? {};
 
   if (!isSecurityAction(action)) {
     res.status(400).json({ error: "Invalid action" });
@@ -48,6 +49,8 @@ export const requestSecurityOtp = async (req: AuthedRequest, res: Response) => {
     return;
   }
 
+  let storedPayload: string | null = payload ? String(payload) : null;
+
   if (act === "change_password") {
     if (!currentPassword) {
       res.status(400).json({ error: "Current password is required" });
@@ -61,6 +64,11 @@ export const requestSecurityOtp = async (req: AuthedRequest, res: Response) => {
       res.status(401).json({ error: "Current password is incorrect" });
       return;
     }
+    if (!isPasswordValid(String(newPassword ?? ""))) {
+      res.status(400).json({ error: "Password must be at least 6 characters" });
+      return;
+    }
+    storedPayload = await hashPassword(newPassword as string);
   }
 
   if (act === "update_email") {
@@ -69,6 +77,12 @@ export const requestSecurityOtp = async (req: AuthedRequest, res: Response) => {
       return;
     }
     const newEmail = normalizeEmail(payload as string);
+    if (newEmail === normalizeEmail(user.email)) {
+      res.status(400).json({
+        error: "New email must be different from your current email",
+      });
+      return;
+    }
     const [existing] = await db
       .select({ id: usersTable.id })
       .from(usersTable)
@@ -79,8 +93,6 @@ export const requestSecurityOtp = async (req: AuthedRequest, res: Response) => {
       return;
     }
   }
-
-  let storedPayload: string | null = payload ? String(payload) : null;
 
   if (act === "add_admin" || act === "add_co_admin") {
     const { messId: messIdParam } = req.body ?? {};
@@ -126,6 +138,41 @@ export const requestSecurityOtp = async (req: AuthedRequest, res: Response) => {
     storedPayload = toAdminActionPayload(messId, consumer.id);
   }
 
+  if (act === "remove_self_admin") {
+    const { messId: messIdParam } = req.body ?? {};
+    const access = await resolveMessAccess(userId, messIdParam, {
+      adminOnly: true,
+      missingMessIdError: "messId is required",
+    });
+    if (!access.ok) {
+      res.status(access.status).json({ error: access.error });
+      return;
+    }
+
+    const adminConsumers = await db
+      .select({ userId: consumersTable.userId })
+      .from(consumersTable)
+      .where(
+        and(
+          eq(consumersTable.messId, access.mess.id),
+          eq(consumersTable.isAdmin, true),
+        ),
+      );
+    const adminUserIds = new Set<number>([access.mess.adminUserId]);
+    for (const consumer of adminConsumers) {
+      if (consumer.userId) adminUserIds.add(consumer.userId);
+    }
+    if (adminUserIds.size <= 1) {
+      res.status(409).json({
+        error:
+          "You are the only admin. Add another admin before removing your role.",
+      });
+      return;
+    }
+
+    storedPayload = String(access.mess.id);
+  }
+
   const { otp, expiresAt } = createOtpChallenge();
 
   await clearSecurityOtp(userId, act);
@@ -150,16 +197,74 @@ export const requestSecurityOtp = async (req: AuthedRequest, res: Response) => {
   res.json({ message: "Verification code sent" });
 };
 
+// POST /api/settings/security/resend-otp — resend an existing challenge
+export const resendSecurityOtp = async (req: AuthedRequest, res: Response) => {
+  const userId = req.auth!.userId;
+  const { action } = req.body ?? {};
+
+  if (!isSecurityAction(action)) {
+    res.status(400).json({ error: "Invalid action" });
+    return;
+  }
+  const act: SecurityAction = action;
+
+  const [[user], [pending]] = await Promise.all([
+    db
+      .select({ email: usersTable.email, name: usersTable.name })
+      .from(usersTable)
+      .where(eq(usersTable.id, userId))
+      .limit(1),
+    db
+      .select({ id: securityOtpsTable.id })
+      .from(securityOtpsTable)
+      .where(
+        and(
+          eq(securityOtpsTable.userId, userId),
+          eq(securityOtpsTable.action, act),
+        ),
+      )
+      .limit(1),
+  ]);
+  if (!user) {
+    res.status(404).json({ error: "User not found" });
+    return;
+  }
+  if (!pending) {
+    res.status(400).json({
+      error: "No pending verification. Please start the request again.",
+    });
+    return;
+  }
+
+  const { otp, expiresAt } = createOtpChallenge();
+  try {
+    await sendSecurityOtpEmail(user.email, user.name, act, otp);
+  } catch (err) {
+    req.log.error({ err }, "Failed to resend security OTP email");
+    res
+      .status(500)
+      .json({ error: "Failed to resend verification code. Please try again." });
+    return;
+  }
+
+  await db
+    .update(securityOtpsTable)
+    .set({ otp, expiresAt, createdAt: new Date() })
+    .where(eq(securityOtpsTable.id, pending.id));
+
+  res.json({ message: "Verification code resent" });
+};
+
 // POST /api/settings/security/change-password
 export const changePassword = async (req: AuthedRequest, res: Response) => {
   const userId = req.auth!.userId;
   const { otp, newPassword } = req.body ?? {};
 
-  if (!otp || !newPassword) {
-    res.status(400).json({ error: "otp and newPassword are required" });
+  if (!otp) {
+    res.status(400).json({ error: "otp is required" });
     return;
   }
-  if (!isPasswordValid(newPassword as string)) {
+  if (newPassword && !isPasswordValid(newPassword as string)) {
     res.status(400).json({ error: "Password must be at least 6 characters" });
     return;
   }
@@ -174,7 +279,14 @@ export const changePassword = async (req: AuthedRequest, res: Response) => {
     return;
   }
 
-  const passwordHash = await hashPassword(newPassword as string);
+  if (!result.pending!.payload && !newPassword) {
+    res.status(400).json({ error: "Please start the password change again" });
+    return;
+  }
+
+  const passwordHash = result.pending!.payload
+    ? result.pending!.payload
+    : await hashPassword(newPassword as string);
   await db
     .update(usersTable)
     .set({ passwordHash })
@@ -205,11 +317,30 @@ export const updateEmail = async (req: AuthedRequest, res: Response) => {
   }
 
   const newEmail = normalizeEmail(result.pending!.payload!);
-  const [existing] = await db
-    .select({ id: usersTable.id })
-    .from(usersTable)
-    .where(eq(usersTable.email, newEmail))
-    .limit(1);
+  const [[currentUser], [existing]] = await Promise.all([
+    db
+      .select({ email: usersTable.email })
+      .from(usersTable)
+      .where(eq(usersTable.id, userId))
+      .limit(1),
+    db
+      .select({ id: usersTable.id })
+      .from(usersTable)
+      .where(eq(usersTable.email, newEmail))
+      .limit(1),
+  ]);
+  if (!currentUser) {
+    await clearSecurityOtp(userId, "update_email");
+    res.status(404).json({ error: "User not found" });
+    return;
+  }
+  if (newEmail === normalizeEmail(currentUser.email)) {
+    await clearSecurityOtp(userId, "update_email");
+    res.status(400).json({
+      error: "New email must be different from your current email",
+    });
+    return;
+  }
   if (existing && existing.id !== userId) {
     await clearSecurityOtp(userId, "update_email");
     res.status(409).json({ error: "This email address is already in use" });
@@ -248,30 +379,101 @@ export const transferAdmin = async (req: AuthedRequest, res: Response) => {
   const { messId, consumerId } = parseAdminActionPayload(
     result.pending!.payload!,
   );
-  const consumer = await getLinkedConsumer(consumerId);
-  if (!consumer) {
-    res.status(400).json({ error: "Consumer no longer has a linked account" });
-    return;
-  }
-  if (!messId) {
+  if (!messId || !consumerId) {
     res.status(403).json({ error: "You are no longer the admin of this mess" });
     return;
   }
 
-  const access = await resolvePrimaryAdminAccess(userId, messId, {
-    accessDeniedError: "You are no longer the admin of this mess",
+  const outcome = await db.transaction(async (tx) => {
+    await tx.execute(
+      sql`select ${messesTable.id} from ${messesTable} where ${messesTable.id} = ${messId} for update`,
+    );
+
+    const [mess] = await tx
+      .select({ adminUserId: messesTable.adminUserId })
+      .from(messesTable)
+      .where(eq(messesTable.id, messId))
+      .limit(1);
+    if (!mess || mess.adminUserId !== userId) {
+      return {
+        error: "You are no longer the primary admin of this mess",
+        status: 403,
+      } as const;
+    }
+
+    const [currentAdminConsumer] = await tx
+      .select({ id: consumersTable.id })
+      .from(consumersTable)
+      .where(
+        and(
+          eq(consumersTable.messId, messId),
+          eq(consumersTable.userId, userId),
+        ),
+      )
+      .limit(1);
+    if (!currentAdminConsumer) {
+      return {
+        error: "Your linked consumer record could not be found",
+        status: 409,
+      } as const;
+    }
+
+    const [newAdmin] = await tx
+      .select({
+        id: consumersTable.id,
+        userId: consumersTable.userId,
+      })
+      .from(consumersTable)
+      .where(
+        and(
+          eq(consumersTable.id, consumerId),
+          eq(consumersTable.messId, messId),
+        ),
+      )
+      .limit(1);
+    if (!newAdmin?.userId) {
+      return {
+        error: "Selected member no longer has a linked account",
+        status: 400,
+      } as const;
+    }
+    if (newAdmin.userId === userId) {
+      return { error: "You are already the admin", status: 400 } as const;
+    }
+
+    await tx
+      .update(consumersTable)
+      .set({ isAdmin: true })
+      .where(eq(consumersTable.id, newAdmin.id));
+    await tx
+      .update(messesTable)
+      .set({ adminUserId: newAdmin.userId })
+      .where(eq(messesTable.id, messId));
+    await tx
+      .update(consumersTable)
+      .set({ isAdmin: false })
+      .where(
+        and(
+          eq(consumersTable.messId, messId),
+          eq(consumersTable.userId, userId),
+        ),
+      );
+    await tx
+      .delete(securityOtpsTable)
+      .where(
+        and(
+          eq(securityOtpsTable.userId, userId),
+          eq(securityOtpsTable.action, "add_admin"),
+        ),
+      );
+
+    return { ok: true } as const;
   });
-  if (!access.ok) {
-    res.status(access.status).json({ error: access.error });
+
+  if ("error" in outcome) {
+    res.status(outcome.status ?? 400).json({ error: outcome.error });
     return;
   }
-  const { mess } = access;
-
-  await db
-    .update(messesTable)
-    .set({ adminUserId: consumer.userId })
-    .where(eq(messesTable.id, mess.id));
-  await clearSecurityOtp(userId, "add_admin");
 
   res.json({ message: "Admin role transferred successfully" });
 };
@@ -328,6 +530,147 @@ export const addCoAdmin = async (req: AuthedRequest, res: Response) => {
   res.json({ message: "Admin privileges granted successfully" });
 };
 
+// POST /api/settings/security/remove-self-admin — revoke the caller's own admin role
+export const removeSelfAdmin = async (req: AuthedRequest, res: Response) => {
+  const userId = req.auth!.userId;
+  const { otp } = req.body ?? {};
+
+  if (!otp) {
+    res.status(400).json({ error: "otp is required" });
+    return;
+  }
+
+  const result = await verifyPendingSecurityOtp(
+    userId,
+    "remove_self_admin",
+    otp as string,
+  );
+  if (result.error) {
+    res.status(result.expired ? 410 : 401).json({ error: result.error });
+    return;
+  }
+
+  const messId = parsePositiveInteger(result.pending!.payload);
+  if (!messId) {
+    await clearSecurityOtp(userId, "remove_self_admin");
+    res.status(400).json({ error: "Invalid admin removal request" });
+    return;
+  }
+
+  const outcome = await db.transaction(async (tx) => {
+    await tx.execute(
+      sql`select ${messesTable.id} from ${messesTable} where ${messesTable.id} = ${messId} for update`,
+    );
+
+    const [mess] = await tx
+      .select({
+        id: messesTable.id,
+        adminUserId: messesTable.adminUserId,
+      })
+      .from(messesTable)
+      .where(eq(messesTable.id, messId))
+      .limit(1);
+    if (!mess) {
+      return { error: "Mess not found", status: 404 } as const;
+    }
+
+    const [currentConsumer] = await tx
+      .select({
+        id: consumersTable.id,
+        isAdmin: consumersTable.isAdmin,
+      })
+      .from(consumersTable)
+      .where(
+        and(
+          eq(consumersTable.messId, messId),
+          eq(consumersTable.userId, userId),
+        ),
+      )
+      .limit(1);
+    const isPrimaryAdmin = mess.adminUserId === userId;
+    if (!isPrimaryAdmin && !currentConsumer?.isAdmin) {
+      return {
+        error: "You are no longer an admin of this mess",
+        status: 403,
+      } as const;
+    }
+    if (!currentConsumer) {
+      return {
+        error: "Your linked consumer record could not be found",
+        status: 409,
+      } as const;
+    }
+
+    const adminConsumers = await tx
+      .select({
+        id: consumersTable.id,
+        userId: consumersTable.userId,
+      })
+      .from(consumersTable)
+      .where(
+        and(
+          eq(consumersTable.messId, messId),
+          eq(consumersTable.isAdmin, true),
+        ),
+      );
+    const adminUserIds = new Set<number>([mess.adminUserId]);
+    for (const consumer of adminConsumers) {
+      if (consumer.userId) adminUserIds.add(consumer.userId);
+    }
+    if (adminUserIds.size <= 1) {
+      return {
+        error:
+          "You are the only admin. Add another admin before removing your role.",
+        status: 409,
+      } as const;
+    }
+
+    if (isPrimaryAdmin) {
+      const replacement = adminConsumers.find(
+        (consumer) => consumer.userId && consumer.userId !== userId,
+      );
+      if (!replacement?.userId) {
+        return {
+          error:
+            "Another active admin is required before you can remove your role.",
+          status: 409,
+        } as const;
+      }
+      await tx
+        .update(messesTable)
+        .set({ adminUserId: replacement.userId })
+        .where(eq(messesTable.id, messId));
+    }
+
+    await tx
+      .update(consumersTable)
+      .set({ isAdmin: false })
+      .where(
+        and(
+          eq(consumersTable.messId, messId),
+          eq(consumersTable.userId, userId),
+        ),
+      );
+    await tx
+      .delete(securityOtpsTable)
+      .where(
+        and(
+          eq(securityOtpsTable.userId, userId),
+          eq(securityOtpsTable.action, "remove_self_admin"),
+        ),
+      );
+
+    return { ok: true } as const;
+  });
+
+  if ("error" in outcome) {
+    res.status(outcome.status ?? 400).json({ error: outcome.error });
+    return;
+  }
+
+  res.json({ message: "Your admin role was removed successfully" });
+};
+
 // GET /api/settings/security/eligible-admins?messId=X
 export const getEligibleAdmins = async (req: AuthedRequest, res: Response) => {
   const userId = req.auth!.userId;
@@ -347,8 +690,10 @@ export const getEligibleAdmins = async (req: AuthedRequest, res: Response) => {
       name: consumersTable.name,
       userId: consumersTable.userId,
       isAdmin: consumersTable.isAdmin,
+      email: usersTable.email,
     })
     .from(consumersTable)
+    .leftJoin(usersTable, eq(consumersTable.userId, usersTable.id))
     .where(eq(consumersTable.messId, mess.id));
 
   const eligible = consumers.filter(

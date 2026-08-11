@@ -62,7 +62,11 @@ export async function sendPasswordResetEmail(
 }
 
 type SecurityAction =
-  "change_password" | "update_email" | "add_admin" | "add_co_admin";
+  | "change_password"
+  | "update_email"
+  | "add_admin"
+  | "add_co_admin"
+  | "remove_self_admin";
 
 const actionMeta: Record<
   SecurityAction,
@@ -95,6 +99,13 @@ const actionMeta: Record<
     body: "Someone (hopefully you) requested to grant admin privileges to a member in your Mess Manager mess. Use the code below to confirm:",
     accent: "#2563EB",
     bg: "#EFF6FF",
+  },
+  remove_self_admin: {
+    subject: "verification code — remove your admin role",
+    heading: "Remove Admin Role Request",
+    body: "Someone (hopefully you) requested to remove your admin privileges from a Mess Manager mess. Use the code below to confirm:",
+    accent: "#DC2626",
+    bg: "#FEF2F2",
   },
 };
 
@@ -136,7 +147,7 @@ export async function sendInviteEmail(
   await resend.emails.send({
     from: FROM,
     to,
-    subject: `${inviterName} invited you to join ${messName} on Mess Manager`,
+    subject: `${inviterName} invited you to join ${messName} on Melager`,
     html: `
       <div style="font-family:sans-serif;max-width:480px;margin:0 auto;padding:32px 24px;">
         <h2 style="color:#0F766E;margin-bottom:8px;">You're invited!</h2>

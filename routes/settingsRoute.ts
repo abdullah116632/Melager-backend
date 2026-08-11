@@ -4,7 +4,9 @@ import {
   addCoAdmin,
   changePassword,
   getEligibleAdmins,
+  removeSelfAdmin,
   requestSecurityOtp,
+  resendSecurityOtp,
   transferAdmin,
   updateEmail,
   updateMess,
@@ -16,10 +18,16 @@ import { requireAuth } from "../middleware/auth.js";
 const router = Router();
 
 router.post("/settings/security/request-otp", requireAuth, requestSecurityOtp);
+router.post("/settings/security/resend-otp", requireAuth, resendSecurityOtp);
 router.post("/settings/security/change-password", requireAuth, changePassword);
 router.post("/settings/security/update-email", requireAuth, updateEmail);
 router.post("/settings/security/add-admin", requireAuth, transferAdmin);
 router.post("/settings/security/add-co-admin", requireAuth, addCoAdmin);
+router.post(
+  "/settings/security/remove-self-admin",
+  requireAuth,
+  removeSelfAdmin,
+);
 router.get(
   "/settings/security/eligible-admins",
   requireAuth,

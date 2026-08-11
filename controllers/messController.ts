@@ -4,6 +4,10 @@ import {
   db,
   messesTable,
   consumersTable,
+  depositEntriesTable,
+  depositsTable,
+  mealOptOutsTable,
+  mealsTable,
   usersTable,
   memberRequestsTable,
 } from "../db/dbConfig.js";
@@ -408,14 +412,48 @@ export const deleteConsumer = async (req: AuthedRequest, res: Response) => {
     return;
   }
 
-  await db
-    .delete(consumersTable)
-    .where(
-      and(
-        eq(consumersTable.id, consumerId),
-        eq(consumersTable.messId, mess.id),
-      ),
-    );
+  await db.transaction(async (tx) => {
+    await tx
+      .delete(mealOptOutsTable)
+      .where(
+        and(
+          eq(mealOptOutsTable.consumerId, consumerId),
+          eq(mealOptOutsTable.messId, mess.id),
+        ),
+      );
+    await tx
+      .delete(depositEntriesTable)
+      .where(
+        and(
+          eq(depositEntriesTable.consumerId, consumerId),
+          eq(depositEntriesTable.messId, mess.id),
+        ),
+      );
+    await tx
+      .delete(depositsTable)
+      .where(
+        and(
+          eq(depositsTable.consumerId, consumerId),
+          eq(depositsTable.messId, mess.id),
+        ),
+      );
+    await tx
+      .delete(mealsTable)
+      .where(
+        and(
+          eq(mealsTable.consumerId, consumerId),
+          eq(mealsTable.messId, mess.id),
+        ),
+      );
+    await tx
+      .delete(consumersTable)
+      .where(
+        and(
+          eq(consumersTable.id, consumerId),
+          eq(consumersTable.messId, mess.id),
+        ),
+      );
+  });
   res.json({ success: true });
 };
 
