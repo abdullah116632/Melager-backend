@@ -35,9 +35,15 @@ export const addDepositEntry = async (req: AuthedRequest, res: Response) => {
     return;
   }
 
-  const amount = parsePositiveInteger(amountRaw);
-  if (!amount) {
-    res.status(400).json({ error: "amount must be a positive number" });
+  const amount = Number(amountRaw);
+  if (
+    !Number.isFinite(amount) ||
+    amount === 0 ||
+    !/^[-+]?\d+(?:\.\d{1,3})?$/.test(String(amountRaw).trim())
+  ) {
+    res
+      .status(400)
+      .json({ error: "amount must be a non-zero number with up to 3 decimal places" });
     return;
   }
 
@@ -104,6 +110,59 @@ export const getDepositEntries = async (req: AuthedRequest, res: Response) => {
     );
 
   res.json({ entries: entries.map(toDepositEntryResponse) });
+};
+
+// PATCH /api/mess/deposit-entry/:id — admin updates an existing deposit
+export const updateDepositEntry = async (req: AuthedRequest, res: Response) => {
+  const userId = req.auth!.userId;
+  const entryId = parsePositiveInteger(req.params.id);
+  const { messId: messIdRaw, amount: amountRaw, depositedAt: depositedAtRaw, note } =
+    req.body ?? {};
+  const messId = parsePositiveInteger(messIdRaw);
+  if (!entryId || !messId) {
+    res.status(400).json({ error: "entry id and messId are required" });
+    return;
+  }
+
+  const access = await resolveMessAccess(userId, messId, { adminOnly: true });
+  if (!access.ok) {
+    res.status(access.status).json({ error: access.error });
+    return;
+  }
+
+  const amount = Number(amountRaw);
+  if (
+    !Number.isFinite(amount) ||
+    amount === 0 ||
+    !/^[-+]?\d+(?:\.\d{1,3})?$/.test(String(amountRaw).trim())
+  ) {
+    res
+      .status(400)
+      .json({ error: "amount must be a non-zero number with up to 3 decimal places" });
+    return;
+  }
+  const depositedAt = depositedAtRaw ? new Date(depositedAtRaw) : null;
+  if (!depositedAt || Number.isNaN(depositedAt.getTime())) {
+    res.status(400).json({ error: "Invalid depositedAt date" });
+    return;
+  }
+
+  const [entry] = await db
+    .update(depositEntriesTable)
+    .set({ amount, depositedAt, note: note?.trim() || null })
+    .where(
+      and(
+        eq(depositEntriesTable.id, entryId),
+        eq(depositEntriesTable.messId, messId),
+      ),
+    )
+    .returning();
+  if (!entry) {
+    res.status(404).json({ error: "Entry not found" });
+    return;
+  }
+
+  res.json({ entry: toDepositEntryResponse(entry) });
 };
 
 // DELETE /api/mess/deposit-entry/:id?messId=X

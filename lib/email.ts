@@ -166,6 +166,35 @@ export async function sendInviteEmail(
   });
 }
 
+export async function sendExistingMemberAddedEmail(
+  to: string,
+  name: string,
+  messName: string,
+  messKey: string,
+): Promise<void> {
+  const resend = getResend();
+  await resend.emails.send({
+    from: FROM,
+    to,
+    subject: `You've been added to ${messName} on Melager`,
+    html: `
+      <div style="font-family:sans-serif;max-width:480px;margin:0 auto;padding:32px 24px;">
+        <h2 style="color:#0F766E;margin-bottom:8px;">You've been added to a mess</h2>
+        <p style="color:#374151;">Hi <strong>${name}</strong>,</p>
+        <p style="color:#374151;">You have been added as a member of <strong>${messName}</strong> on Melager.</p>
+        <p style="color:#374151;">You can open the app and select this mess right away. Its mess key is included below for your reference:</p>
+        <div style="font-size:32px;font-weight:700;letter-spacing:10px;text-align:center;
+                    padding:24px;background:#F0FDFA;border:2px solid #14B8A6;
+                    border-radius:12px;margin:24px 0;color:#0F766E;">
+          ${messKey}
+        </div>
+        <p style="color:#6B7280;font-size:14px;">No join request is needed. If you do not see the mess immediately, refresh the app or sign out and sign in again.</p>
+        <p style="color:#9CA3AF;font-size:12px;margin-top:32px;">This is an automated message from Melager.</p>
+      </div>
+    `,
+  });
+}
+
 export interface ConsumerSummary {
   name: string;
   meals: number;
@@ -200,8 +229,8 @@ export async function sendMonthlySummaryEmail(
 
   const fmt = (n: number) =>
     n.toLocaleString("en-IN", {
-      minimumFractionDigits: 2,
-      maximumFractionDigits: 2,
+      minimumFractionDigits: 0,
+      maximumFractionDigits: 3,
     });
 
   const balColor = summary.balance >= 0 ? "#059669" : "#DC2626";

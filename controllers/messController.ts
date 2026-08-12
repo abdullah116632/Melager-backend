@@ -12,7 +12,11 @@ import {
   memberRequestsTable,
 } from "../db/dbConfig.js";
 import type { AuthedRequest } from "../middleware/auth.js";
-import { sendWelcomeEmail, sendInviteEmail } from "../lib/email.js";
+import {
+  sendExistingMemberAddedEmail,
+  sendWelcomeEmail,
+  sendInviteEmail,
+} from "../lib/email.js";
 import { getMessContext } from "../lib/mess-access.js";
 import { normalizeEmail } from "../utils/authUtils.js";
 import {
@@ -331,9 +335,40 @@ export const addConsumer = async (req: AuthedRequest, res: Response) => {
     .limit(1);
 
   if (existingUser) {
-    res.status(409).json({
-      error: `An account with this email already exists. Ask them to join using the mess key: ${mess.messKey}`,
+    const [existingConsumer] = await db
+      .select({ id: consumersTable.id })
+      .from(consumersTable)
+      .where(
+        and(
+          eq(consumersTable.messId, mess.id),
+          eq(consumersTable.userId, existingUser.id),
+        ),
+      )
+      .limit(1);
+    if (existingConsumer) {
+      res.status(409).json({ error: "This user is already a member of this mess" });
+      return;
+    }
+
+    const [consumer] = await db
+      .insert(consumersTable)
+      .values({
+        messId: mess.id,
+        name: consumerName,
+        userId: existingUser.id,
+      })
+      .returning({ id: consumersTable.id, name: consumersTable.name });
+
+    sendExistingMemberAddedEmail(
+      normalizedEmail,
+      consumerName,
+      mess.name,
+      mess.messKey,
+    ).catch((err: unknown) => {
+      req.log.error({ err }, "Failed to send added-to-mess email");
     });
+
+    res.json({ consumer, invitationSent: true });
     return;
   }
 
@@ -364,7 +399,7 @@ export const addConsumer = async (req: AuthedRequest, res: Response) => {
     .values({ messId: mess.id, name: consumerName, userId: newUser.id })
     .returning({ id: consumersTable.id, name: consumersTable.name });
 
-  res.json({ consumer });
+  res.json({ consumer, invitationSent: false });
 };
 
 // DELETE /api/mess/consumers/:id?messId=X — admin only; cannot delete admin consumers

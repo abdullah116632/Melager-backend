@@ -3,6 +3,7 @@ import {
   serial,
   text,
   integer,
+  numeric,
   boolean,
   timestamp,
   jsonb,
@@ -62,7 +63,9 @@ export const mealsTable = pgTable(
       .references(() => consumersTable.id),
     yearMonth: text("year_month").notNull(),
     day: integer("day").notNull(),
-    count: integer("count").notNull().default(0),
+    count: numeric("count", { precision: 12, scale: 3, mode: "number" })
+      .notNull()
+      .default(0),
   },
   (t) => [
     unique("meals_uq").on(t.messId, t.consumerId, t.yearMonth, t.day),
@@ -102,7 +105,9 @@ export const depositsTable = pgTable(
       .references(() => consumersTable.id),
     yearMonth: text("year_month").notNull(),
     day: integer("day").notNull(),
-    amount: integer("amount").notNull().default(0),
+    amount: numeric("amount", { precision: 14, scale: 3, mode: "number" })
+      .notNull()
+      .default(0),
   },
   (t) => [
     unique("deposits_uq").on(t.messId, t.consumerId, t.yearMonth, t.day),
@@ -225,7 +230,8 @@ export const depositEntriesTable = pgTable(
     consumerId: integer("consumer_id")
       .notNull()
       .references(() => consumersTable.id),
-    amount: integer("amount").notNull(),
+    amount: numeric("amount", { precision: 14, scale: 3, mode: "number" })
+      .notNull(),
     depositedAt: timestamp("deposited_at").notNull().defaultNow(),
     note: text("note"),
   },

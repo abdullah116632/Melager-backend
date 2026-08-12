@@ -23,6 +23,18 @@ import {
 } from "../utils/dateUtils.js";
 import { resolveMessAccess } from "../utils/messAccessUtils.js";
 
+const parseDecimal = (
+  value: unknown,
+  { allowNegative = false, allowZero = true } = {},
+): number | null => {
+  const raw = String(value).trim();
+  if (!/^-?\d+(?:\.\d{1,3})?$/.test(raw)) return null;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || (!allowNegative && parsed < 0)) return null;
+  if (!allowZero && parsed === 0) return null;
+  return parsed;
+};
+
 // GET /api/mess/data/:yearMonth?messId=X
 export const getMonthData = async (req: AuthedRequest, res: Response) => {
   const userId = req.auth!.userId;
@@ -133,6 +145,11 @@ export const setMeal = async (req: AuthedRequest, res: Response) => {
       .json({ error: "consumerId, yearMonth, day, count are required" });
     return;
   }
+  const mealCount = parseDecimal(count);
+  if (mealCount === null) {
+    res.status(400).json({ error: "count must be a non-negative number with up to 3 decimal places" });
+    return;
+  }
   await db
     .insert(mealsTable)
     .values({
@@ -140,7 +157,7 @@ export const setMeal = async (req: AuthedRequest, res: Response) => {
       consumerId: parseInt(consumerId, 10),
       yearMonth,
       day: parseInt(day, 10),
-      count: parseInt(count, 10),
+      count: mealCount,
     })
     .onConflictDoUpdate({
       target: [
@@ -149,7 +166,7 @@ export const setMeal = async (req: AuthedRequest, res: Response) => {
         mealsTable.yearMonth,
         mealsTable.day,
       ],
-      set: { count: parseInt(count, 10) },
+      set: { count: mealCount },
     });
   res.json({ success: true });
 };
@@ -170,16 +187,45 @@ export const setExpense = async (req: AuthedRequest, res: Response) => {
     res.status(400).json({ error: "yearMonth, day, items[] are required" });
     return;
   }
+  const normalizedItems = items.map((item) => {
+    const amount = parseDecimal(item?.amount);
+    return {
+      id: String(item?.id ?? ""),
+      name: String(item?.name ?? "").trim(),
+      amount,
+    };
+  });
+  if (
+    normalizedItems.some(
+      (item) => !item.id || !item.name || item.amount === null,
+    )
+  ) {
+    res.status(400).json({
+      error: "Each expense needs a name and a non-negative amount with up to 3 decimal places",
+    });
+    return;
+  }
   await db
     .insert(expenseDaysTable)
-    .values({ messId: mess.id, yearMonth, day: parseInt(day, 10), items })
+    .values({
+      messId: mess.id,
+      yearMonth,
+      day: parseInt(day, 10),
+      items: normalizedItems as Array<{ id: string; name: string; amount: number }>,
+    })
     .onConflictDoUpdate({
       target: [
         expenseDaysTable.messId,
         expenseDaysTable.yearMonth,
         expenseDaysTable.day,
       ],
-      set: { items },
+      set: {
+        items: normalizedItems as Array<{
+          id: string;
+          name: string;
+          amount: number;
+        }>,
+      },
     });
   res.json({ success: true });
 };
@@ -208,6 +254,15 @@ export const setDeposit = async (req: AuthedRequest, res: Response) => {
       .json({ error: "consumerId, yearMonth, day, amount are required" });
     return;
   }
+  const depositAmount = parseDecimal(amount, {
+    allowNegative: true,
+  });
+  if (depositAmount === null) {
+    res.status(400).json({
+      error: "amount must be a number with up to 3 decimal places",
+    });
+    return;
+  }
   await db
     .insert(depositsTable)
     .values({
@@ -215,7 +270,7 @@ export const setDeposit = async (req: AuthedRequest, res: Response) => {
       consumerId: parseInt(consumerId, 10),
       yearMonth,
       day: parseInt(day, 10),
-      amount: parseInt(amount, 10),
+      amount: depositAmount,
     })
     .onConflictDoUpdate({
       target: [
@@ -224,7 +279,7 @@ export const setDeposit = async (req: AuthedRequest, res: Response) => {
         depositsTable.yearMonth,
         depositsTable.day,
       ],
-      set: { amount: parseInt(amount, 10) },
+      set: { amount: depositAmount },
     });
   res.json({ success: true });
 };
