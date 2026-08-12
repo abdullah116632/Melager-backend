@@ -1,4 +1,4 @@
--- Google authentication support for Mess Manager.
+-- Google authentication support for Melager.
 -- Safe to run once in Neon SQL Editor or any PostgreSQL client.
 
 ALTER TABLE "users"

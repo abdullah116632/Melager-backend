@@ -7,7 +7,7 @@ function getResend(): Resend {
 }
 
 const FROM =
-  process.env.RESEND_FROM_EMAIL ?? "Mess Manager <onboarding@resend.dev>";
+  process.env.RESEND_FROM_EMAIL ?? "Melager <onboarding@resend.dev>";
 
 export async function sendOtpEmail(
   to: string,
@@ -18,12 +18,12 @@ export async function sendOtpEmail(
   await resend.emails.send({
     from: FROM,
     to,
-    subject: `${otp} — your Mess Manager verification code`,
+    subject: `${otp} — your Melager verification code`,
     html: `
       <div style="font-family:sans-serif;max-width:480px;margin:0 auto;padding:32px 24px;">
         <h2 style="color:#0F766E;margin-bottom:8px;">Verify your email</h2>
         <p style="color:#374151;">Hi <strong>${name}</strong>,</p>
-        <p style="color:#374151;">Enter the code below in the Mess Manager app to verify your email address:</p>
+        <p style="color:#374151;">Enter the code below in the Melager app to verify your email address:</p>
         <div style="font-size:40px;font-weight:700;letter-spacing:12px;text-align:center;
                     padding:24px;background:#F0FDFA;border:2px solid #14B8A6;
                     border-radius:12px;margin:24px 0;color:#0F766E;">
@@ -44,12 +44,12 @@ export async function sendPasswordResetEmail(
   await resend.emails.send({
     from: FROM,
     to,
-    subject: `${otp} — reset your Mess Manager password`,
+    subject: `${otp} — reset your Melager password`,
     html: `
       <div style="font-family:sans-serif;max-width:480px;margin:0 auto;padding:32px 24px;">
         <h2 style="color:#0F766E;margin-bottom:8px;">Reset your password</h2>
         <p style="color:#374151;">Hi <strong>${name}</strong>,</p>
-        <p style="color:#374151;">Use the code below to reset your Mess Manager password:</p>
+        <p style="color:#374151;">Use the code below to reset your Melager password:</p>
         <div style="font-size:40px;font-weight:700;letter-spacing:12px;text-align:center;
                     padding:24px;background:#FFF7ED;border:2px solid #F97316;
                     border-radius:12px;margin:24px 0;color:#EA580C;">
@@ -75,35 +75,35 @@ const actionMeta: Record<
   change_password: {
     subject: "verification code — change your password",
     heading: "Change Password Request",
-    body: "Someone (hopefully you) requested a password change on your Mess Manager account. Use the code below to confirm:",
+    body: "Someone (hopefully you) requested a password change on your Melager account. Use the code below to confirm:",
     accent: "#2563EB",
     bg: "#EFF6FF",
   },
   update_email: {
     subject: "verification code — update your email",
     heading: "Email Change Request",
-    body: "Someone (hopefully you) requested an email address change on your Mess Manager account. Use the code below to confirm:",
+    body: "Someone (hopefully you) requested an email address change on your Melager account. Use the code below to confirm:",
     accent: "#0D9488",
     bg: "#F0FDFA",
   },
   add_admin: {
     subject: "verification code — transfer admin role",
     heading: "Admin Transfer Request",
-    body: "Someone (hopefully you) requested to transfer the admin role in your Mess Manager mess. Use the code below to confirm:",
+    body: "Someone (hopefully you) requested to transfer the admin role in your Melager mess. Use the code below to confirm:",
     accent: "#EA580C",
     bg: "#FFF7ED",
   },
   add_co_admin: {
     subject: "verification code — add new admin",
     heading: "Add New Admin Request",
-    body: "Someone (hopefully you) requested to grant admin privileges to a member in your Mess Manager mess. Use the code below to confirm:",
+    body: "Someone (hopefully you) requested to grant admin privileges to a member in your Melager mess. Use the code below to confirm:",
     accent: "#2563EB",
     bg: "#EFF6FF",
   },
   remove_self_admin: {
     subject: "verification code — remove your admin role",
     heading: "Remove Admin Role Request",
-    body: "Someone (hopefully you) requested to remove your admin privileges from a Mess Manager mess. Use the code below to confirm:",
+    body: "Someone (hopefully you) requested to remove your admin privileges from a Melager mess. Use the code below to confirm:",
     accent: "#DC2626",
     bg: "#FEF2F2",
   },
@@ -152,15 +152,15 @@ export async function sendInviteEmail(
       <div style="font-family:sans-serif;max-width:480px;margin:0 auto;padding:32px 24px;">
         <h2 style="color:#0F766E;margin-bottom:8px;">You're invited!</h2>
         <p style="color:#374151;">Hi there,</p>
-        <p style="color:#374151;"><strong>${inviterName}</strong> has invited you to join <strong>${messName}</strong> on Mess Manager.</p>
+        <p style="color:#374151;"><strong>${inviterName}</strong> has invited you to join <strong>${messName}</strong> on Melager.</p>
         <p style="color:#374151;">Download the app and use the key below to join:</p>
         <div style="font-size:32px;font-weight:700;letter-spacing:10px;text-align:center;
                     padding:24px;background:#F0FDFA;border:2px solid #14B8A6;
                     border-radius:12px;margin:24px 0;color:#0F766E;">
           ${messKey}
         </div>
-        <p style="color:#6B7280;font-size:14px;">Open Mess Manager → Sign up or log in → Join a mess → Enter the key above.</p>
-        <p style="color:#9CA3AF;font-size:12px;margin-top:32px;">This is an automated message from Mess Manager.</p>
+        <p style="color:#6B7280;font-size:14px;">Open Melager → Sign up or log in → Join a mess → Enter the key above.</p>
+        <p style="color:#9CA3AF;font-size:12px;margin-top:32px;">This is an automated message from Melager.</p>
       </div>
     `,
   });
@@ -267,7 +267,7 @@ export async function sendMonthlySummaryEmail(
              </div>`
         }
 
-        <p style="color:#9CA3AF;font-size:12px;margin-top:32px;">This is an automated summary from Mess Manager.</p>
+        <p style="color:#9CA3AF;font-size:12px;margin-top:32px;">This is an automated summary from Melager.</p>
       </div>
     `,
   });
@@ -283,18 +283,18 @@ export async function sendWelcomeEmail(
   await resend.emails.send({
     from: FROM,
     to,
-    subject: `You've been added to ${messName} on Mess Manager`,
+    subject: `You've been added to ${messName} on Melager`,
     html: `
       <div style="font-family:sans-serif;max-width:480px;margin:0 auto;padding:32px 24px;">
         <h2 style="color:#0F766E;margin-bottom:8px;">Welcome to ${messName}!</h2>
         <p style="color:#374151;">Hi <strong>${name}</strong>,</p>
-        <p style="color:#374151;">You've been added to <strong>${messName}</strong> on Mess Manager. Use the credentials below to log in:</p>
+        <p style="color:#374151;">You've been added to <strong>${messName}</strong> on Melager. Use the credentials below to log in:</p>
         <div style="background:#F9FAFB;border:1px solid #E5E7EB;border-radius:10px;padding:20px;margin:24px 0;">
           <p style="margin:0 0 10px;color:#374151;"><strong>Email:</strong> ${to}</p>
           <p style="margin:0;color:#374151;"><strong>Password:</strong> <code style="background:#F3F4F6;padding:2px 6px;border-radius:4px;">${password}</code></p>
         </div>
         <p style="color:#DC2626;font-size:14px;">For security, please change your password after your first login.</p>
-        <p style="color:#9CA3AF;font-size:12px;margin-top:32px;">This is an automated message from Mess Manager.</p>
+        <p style="color:#9CA3AF;font-size:12px;margin-top:32px;">This is an automated message from Melager.</p>
       </div>
     `,
   });

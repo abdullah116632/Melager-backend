@@ -1,4 +1,4 @@
-# Mess Manager — Backend
+# Melager — Backend
 
 Express + Drizzle ORM + PostgreSQL (Neon) + Resend email.
 
@@ -50,7 +50,7 @@ build.mjs               esbuild bundler
 | `DATABASE_URL` | yes | `postgresql://user:pass@ep-xxx.neon.tech/db?sslmode=require` |
 | `SESSION_SECRET` | yes | 48 random bytes hex |
 | `RESEND_API_KEY` | yes | `re_xxx` |
-| `RESEND_FROM_EMAIL` | yes | `Mess Manager <noreply@yourdomain.com>` |
+| `RESEND_FROM_EMAIL` | yes | `Melager <noreply@yourdomain.com>` |
 
 ## Deployment
 
