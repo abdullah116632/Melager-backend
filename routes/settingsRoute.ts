@@ -3,6 +3,7 @@ import { Router } from "express";
 import {
   addCoAdmin,
   changePassword,
+  deleteAccount,
   getEligibleAdmins,
   removeSelfAdmin,
   requestSecurityOtp,
@@ -35,6 +36,7 @@ router.get(
 );
 router.patch("/settings/profile", requireAuth, updateProfile);
 router.patch("/settings/profile/phone", requireAuth, updatePhone);
+router.delete("/settings/account", requireAuth, deleteAccount);
 router.patch("/settings/mess", requireAuth, updateMess);
 
 export default router;

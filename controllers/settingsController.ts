@@ -18,6 +18,7 @@ import {
 } from "../utils/passwordUtils.js";
 import { resolvePrimaryAdminAccess } from "../utils/primaryAdminAccessUtils.js";
 import { resolveMessAccess } from "../utils/messAccessUtils.js";
+import { deleteUserAccountPreservingAccounting } from "../utils/accountDeletionUtils.js";
 import {
   clearSecurityOtp,
   getLinkedConsumer,
@@ -736,6 +737,63 @@ export const updatePhone = async (req: AuthedRequest, res: Response) => {
     .set({ mobileNumber: trimmed || null })
     .where(eq(usersTable.id, userId));
   res.json({ mobileNumber: trimmed || null });
+};
+
+// DELETE /api/settings/account — permanently removes the login account while
+// anonymizing linked consumer rows so historical accounting remains intact.
+export const deleteAccount = async (req: AuthedRequest, res: Response) => {
+  const userId = req.auth!.userId;
+  const { password } = req.body ?? {};
+
+  if (typeof password !== "string" || password.length === 0) {
+    res.status(400).json({ error: "Password is required" });
+    return;
+  }
+  if (password.length > 256) {
+    res.status(400).json({ error: "Password is too long" });
+    return;
+  }
+
+  const [user] = await db
+    .select({
+      id: usersTable.id,
+      email: usersTable.email,
+      passwordHash: usersTable.passwordHash,
+      googleSubject: usersTable.googleSubject,
+    })
+    .from(usersTable)
+    .where(eq(usersTable.id, userId))
+    .limit(1);
+
+  if (!user) {
+    res.status(404).json({ error: "Account not found" });
+    return;
+  }
+
+  const passwordMatches = await verifyPassword(password, user.passwordHash);
+  if (!passwordMatches) {
+    res.status(401).json({
+      error: user.googleSubject
+        ? "Password is incorrect. If you created this account with Google, use Forgot Password to set a password first."
+        : "Password is incorrect",
+    });
+    return;
+  }
+
+  const outcome = await deleteUserAccountPreservingAccounting(
+    userId,
+    user.email,
+  );
+
+  if (outcome.blockedMessNames.length > 0) {
+    res.status(409).json({
+      error: `Add another admin before deleting your account in: ${outcome.blockedMessNames.join(", ")}`,
+      blockingMesses: outcome.blockedMessNames,
+    });
+    return;
+  }
+
+  res.json({ success: true });
 };
 
 // PATCH /api/settings/mess — update mess name (admin only)

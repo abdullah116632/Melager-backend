@@ -287,6 +287,7 @@ export const getConsumers = async (req: AuthedRequest, res: Response) => {
       name: consumersTable.name,
       userId: consumersTable.userId,
       isAdmin: consumersTable.isAdmin,
+      accountDeletedAt: consumersTable.accountDeletedAt,
       email: usersTable.email,
       mobileNumber: usersTable.mobileNumber,
     })
@@ -346,7 +347,9 @@ export const addConsumer = async (req: AuthedRequest, res: Response) => {
       )
       .limit(1);
     if (existingConsumer) {
-      res.status(409).json({ error: "This user is already a member of this mess" });
+      res
+        .status(409)
+        .json({ error: "This user is already a member of this mess" });
       return;
     }
 
@@ -426,6 +429,7 @@ export const deleteConsumer = async (req: AuthedRequest, res: Response) => {
       id: consumersTable.id,
       isAdmin: consumersTable.isAdmin,
       userId: consumersTable.userId,
+      accountDeletedAt: consumersTable.accountDeletedAt,
     })
     .from(consumersTable)
     .where(
@@ -443,6 +447,13 @@ export const deleteConsumer = async (req: AuthedRequest, res: Response) => {
   if (target.isAdmin) {
     res.status(403).json({
       error: "Admin members cannot be deleted. Remove their admin role first.",
+    });
+    return;
+  }
+  if (target.accountDeletedAt) {
+    res.status(409).json({
+      error:
+        "Deleted-account records are retained to preserve historical accounting.",
     });
     return;
   }

@@ -6,8 +6,7 @@ function getResend(): Resend {
   return new Resend(key);
 }
 
-const FROM =
-  process.env.RESEND_FROM_EMAIL ?? "Melager <onboarding@resend.dev>";
+const FROM = process.env.RESEND_FROM_EMAIL ?? "Melager <onboarding@resend.dev>";
 
 export async function sendOtpEmail(
   to: string,
@@ -56,6 +55,32 @@ export async function sendPasswordResetEmail(
           ${otp}
         </div>
         <p style="color:#6B7280;font-size:14px;">This code expires in <strong>10 minutes</strong>. If you didn't request a password reset, you can safely ignore this email.</p>
+      </div>
+    `,
+  });
+}
+
+export async function sendAccountDeletionOtpEmail(
+  to: string,
+  name: string,
+  otp: string,
+): Promise<void> {
+  const resend = getResend();
+  await resend.emails.send({
+    from: FROM,
+    to,
+    subject: `${otp} — confirm deletion of your Melager account`,
+    html: `
+      <div style="font-family:sans-serif;max-width:480px;margin:0 auto;padding:32px 24px;">
+        <h2 style="color:#DC2626;margin-bottom:8px;">Delete your Melager account</h2>
+        <p style="color:#374151;">Hi <strong>${name}</strong>,</p>
+        <p style="color:#374151;">Use the verification code below to permanently delete your Melager account:</p>
+        <div style="font-size:40px;font-weight:700;letter-spacing:12px;text-align:center;
+                    padding:24px;background:#FEF2F2;border:2px solid #DC2626;
+                    border-radius:12px;margin:24px 0;color:#DC2626;">
+          ${otp}
+        </div>
+        <p style="color:#6B7280;font-size:14px;">This code expires in <strong>10 minutes</strong>. If you did not request account deletion, do not share this code and you can safely ignore this email.</p>
       </div>
     `,
   });

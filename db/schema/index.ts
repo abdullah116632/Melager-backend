@@ -43,6 +43,9 @@ export const consumersTable = pgTable(
     name: text("name").notNull(),
     userId: integer("user_id").references(() => usersTable.id),
     isAdmin: boolean("is_admin").notNull().default(false),
+    // Kept after a linked user deletes their account so historical meals,
+    // deposits and balances remain consistent without retaining identity data.
+    accountDeletedAt: timestamp("account_deleted_at"),
     createdAt: timestamp("created_at").defaultNow().notNull(),
   },
   (t) => [
@@ -122,6 +125,19 @@ export const passwordResetsTable = pgTable("password_resets", {
   expiresAt: timestamp("expires_at").notNull(),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
+
+export const accountDeletionOtpsTable = pgTable(
+  "account_deletion_otps",
+  {
+    id: serial("id").primaryKey(),
+    email: text("email").notNull().unique(),
+    otp: text("otp").notNull(),
+    attempts: integer("attempts").notNull().default(0),
+    expiresAt: timestamp("expires_at").notNull(),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (t) => [index("account_deletion_otps_email_idx").on(t.email)],
+);
 
 export const otpVerificationsTable = pgTable("otp_verifications", {
   id: serial("id").primaryKey(),
@@ -230,8 +246,11 @@ export const depositEntriesTable = pgTable(
     consumerId: integer("consumer_id")
       .notNull()
       .references(() => consumersTable.id),
-    amount: numeric("amount", { precision: 14, scale: 3, mode: "number" })
-      .notNull(),
+    amount: numeric("amount", {
+      precision: 14,
+      scale: 3,
+      mode: "number",
+    }).notNull(),
     depositedAt: timestamp("deposited_at").notNull().defaultNow(),
     note: text("note"),
   },

@@ -1,7 +1,7 @@
 import type { Request, Response } from "express";
 import { OAuth2Client } from "google-auth-library";
 import { randomUUID } from "node:crypto";
-import { eq, and, inArray } from "drizzle-orm";
+import { eq, and, inArray, sql } from "drizzle-orm";
 import {
   db,
   usersTable,
@@ -10,9 +10,14 @@ import {
   otpVerificationsTable,
   passwordResetsTable,
   memberRequestsTable,
+  accountDeletionOtpsTable,
 } from "../db/dbConfig.js";
 import { signToken, type AuthedRequest } from "../middleware/auth.js";
-import { sendOtpEmail, sendPasswordResetEmail } from "../lib/email.js";
+import {
+  sendAccountDeletionOtpEmail,
+  sendOtpEmail,
+  sendPasswordResetEmail,
+} from "../lib/email.js";
 import {
   createOtpChallenge,
   getConfiguredGoogleClientIds,
@@ -26,6 +31,7 @@ import {
   isPasswordValid,
   verifyPassword,
 } from "../utils/passwordUtils.js";
+import { deleteUserAccountPreservingAccounting } from "../utils/accountDeletionUtils.js";
 
 const googleClient = new OAuth2Client();
 
@@ -320,6 +326,151 @@ export const resetPassword = async (req: Request, res: Response) => {
     .where(eq(passwordResetsTable.email, normalizedEmail));
 
   res.json({ message: "Password reset successfully" });
+};
+
+// POST /api/auth/account-deletion/request-otp
+export const requestAccountDeletionOtp = async (
+  req: Request,
+  res: Response,
+) => {
+  const { email } = req.body ?? {};
+  if (typeof email !== "string" || !email.trim()) {
+    res.status(400).json({ error: "email is required" });
+    return;
+  }
+  const normalizedEmail = normalizeEmail(email);
+  if (normalizedEmail.length > 320) {
+    res.status(400).json({ error: "Invalid email address" });
+    return;
+  }
+
+  const [[user], [existingChallenge]] = await Promise.all([
+    db
+      .select({ name: usersTable.name })
+      .from(usersTable)
+      .where(eq(usersTable.email, normalizedEmail))
+      .limit(1),
+    db
+      .select({ createdAt: accountDeletionOtpsTable.createdAt })
+      .from(accountDeletionOtpsTable)
+      .where(eq(accountDeletionOtpsTable.email, normalizedEmail))
+      .limit(1),
+  ]);
+
+  if (!user) {
+    res.status(404).json({ error: "No account found with this email address" });
+    return;
+  }
+  if (
+    existingChallenge &&
+    Date.now() - existingChallenge.createdAt.getTime() < 60_000
+  ) {
+    res.status(429).json({
+      error: "Please wait 60 seconds before requesting another code",
+    });
+    return;
+  }
+
+  const { otp, expiresAt } = createOtpChallenge();
+  await db
+    .delete(accountDeletionOtpsTable)
+    .where(eq(accountDeletionOtpsTable.email, normalizedEmail));
+  await db.insert(accountDeletionOtpsTable).values({
+    email: normalizedEmail,
+    otp,
+    attempts: 0,
+    expiresAt,
+  });
+
+  try {
+    await sendAccountDeletionOtpEmail(normalizedEmail, user.name, otp);
+  } catch (err) {
+    await db
+      .delete(accountDeletionOtpsTable)
+      .where(eq(accountDeletionOtpsTable.email, normalizedEmail));
+    req.log.error({ err }, "Failed to send account deletion OTP email");
+    res.status(500).json({
+      error: "Failed to send verification email. Please try again.",
+    });
+    return;
+  }
+
+  res.json({ message: "Account deletion code sent" });
+};
+
+// POST /api/auth/account-deletion/confirm
+export const confirmAccountDeletionOtp = async (
+  req: Request,
+  res: Response,
+) => {
+  const { email, otp } = req.body ?? {};
+  if (
+    typeof email !== "string" ||
+    !email.trim() ||
+    typeof otp !== "string" ||
+    !otp.trim()
+  ) {
+    res.status(400).json({ error: "email and otp are required" });
+    return;
+  }
+
+  const normalizedEmail = normalizeEmail(email);
+  const normalizedOtp = normalizeOtp(otp);
+  const [[user], [pending]] = await Promise.all([
+    db
+      .select({ id: usersTable.id })
+      .from(usersTable)
+      .where(eq(usersTable.email, normalizedEmail))
+      .limit(1),
+    db
+      .select()
+      .from(accountDeletionOtpsTable)
+      .where(eq(accountDeletionOtpsTable.email, normalizedEmail))
+      .limit(1),
+  ]);
+
+  if (!user || !pending) {
+    res.status(401).json({ error: "Invalid or expired verification code" });
+    return;
+  }
+  if (isOtpExpired(pending.expiresAt)) {
+    await db
+      .delete(accountDeletionOtpsTable)
+      .where(eq(accountDeletionOtpsTable.email, normalizedEmail));
+    res.status(410).json({ error: "Code expired. Please request a new one." });
+    return;
+  }
+  if (!/^\d{6}$/.test(normalizedOtp) || pending.otp !== normalizedOtp) {
+    if (pending.attempts >= 4) {
+      await db
+        .delete(accountDeletionOtpsTable)
+        .where(eq(accountDeletionOtpsTable.email, normalizedEmail));
+      res.status(429).json({
+        error: "Too many incorrect attempts. Please request a new code.",
+      });
+      return;
+    }
+    await db
+      .update(accountDeletionOtpsTable)
+      .set({ attempts: sql`${accountDeletionOtpsTable.attempts} + 1` })
+      .where(eq(accountDeletionOtpsTable.email, normalizedEmail));
+    res.status(401).json({ error: "Incorrect code. Please try again." });
+    return;
+  }
+
+  const outcome = await deleteUserAccountPreservingAccounting(
+    user.id,
+    normalizedEmail,
+  );
+  if (outcome.blockedMessNames.length > 0) {
+    res.status(409).json({
+      error: `Add another admin before deleting your account in: ${outcome.blockedMessNames.join(", ")}`,
+      blockingMesses: outcome.blockedMessNames,
+    });
+    return;
+  }
+
+  res.json({ success: true });
 };
 
 // POST /api/auth/login
