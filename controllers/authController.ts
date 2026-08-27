@@ -205,11 +205,15 @@ export const resendOtp = async (req: Request, res: Response) => {
 // POST /api/auth/forgot-password — sends OTP reset code to registered email
 export const forgotPassword = async (req: Request, res: Response) => {
   const { email } = req.body ?? {};
-  if (!email) {
+  if (typeof email !== "string" || !email.trim()) {
     res.status(400).json({ error: "email is required" });
     return;
   }
-  const normalizedEmail = normalizeEmail(email as string);
+  if (!isValidEmail(email)) {
+    res.status(400).json({ error: "Please enter a valid email address" });
+    return;
+  }
+  const normalizedEmail = normalizeEmail(email);
 
   const [user] = await db
     .select({ id: usersTable.id, name: usersTable.name })
