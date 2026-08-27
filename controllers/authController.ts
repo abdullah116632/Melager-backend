@@ -21,6 +21,7 @@ import {
 import {
   createOtpChallenge,
   getConfiguredGoogleClientIds,
+  isValidEmail,
   isOtpExpired,
   normalizeEmail,
   normalizeOtp,
@@ -38,23 +39,34 @@ const googleClient = new OAuth2Client();
 // POST /api/auth/signup — stores pending verification, sends OTP email
 export const signup = async (req: Request, res: Response) => {
   const { email, name, password, mobileNumber } = req.body ?? {};
-  if (!email || !name || !password) {
+  if (
+    typeof email !== "string" ||
+    !email.trim() ||
+    typeof name !== "string" ||
+    !name.trim() ||
+    typeof password !== "string" ||
+    !password
+  ) {
     res.status(400).json({ error: "email, name and password are required" });
+    return;
+  }
+  if (!isValidEmail(email)) {
+    res.status(400).json({ error: "Please enter a valid email address" });
     return;
   }
   if (mobileNumber && (mobileNumber as string).trim().length !== 11) {
     res.status(400).json({ error: "Mobile number must be exactly 11 digits" });
     return;
   }
-  if (!isPasswordValid(password as string)) {
+  if (!isPasswordValid(password)) {
     res.status(400).json({ error: "Password must be at least 6 characters" });
     return;
   }
-  const normalizedEmail = normalizeEmail(email as string);
+  const normalizedEmail = normalizeEmail(email);
   const normalizedMobile = mobileNumber
     ? (mobileNumber as string).trim()
     : undefined;
-  const normalizedName = (name as string).trim();
+  const normalizedName = name.trim();
 
   const existing = await db
     .select({ id: usersTable.id })
@@ -67,7 +79,7 @@ export const signup = async (req: Request, res: Response) => {
   }
 
   const { otp, expiresAt } = createOtpChallenge();
-  const passwordHash = await hashPassword(password as string);
+  const passwordHash = await hashPassword(password);
 
   await db
     .delete(otpVerificationsTable)
@@ -476,20 +488,29 @@ export const confirmAccountDeletionOtp = async (
 // POST /api/auth/login
 export const login = async (req: Request, res: Response) => {
   const { email, password } = req.body ?? {};
-  if (!email || !password) {
+  if (
+    typeof email !== "string" ||
+    !email.trim() ||
+    typeof password !== "string" ||
+    !password
+  ) {
     res.status(400).json({ error: "email and password are required" });
+    return;
+  }
+  if (!isValidEmail(email)) {
+    res.status(400).json({ error: "Please enter a valid email address" });
     return;
   }
   const [user] = await db
     .select()
     .from(usersTable)
-    .where(eq(usersTable.email, normalizeEmail(email as string)))
+    .where(eq(usersTable.email, normalizeEmail(email)))
     .limit(1);
   if (!user) {
     res.status(401).json({ error: "Invalid email or password" });
     return;
   }
-  const valid = await verifyPassword(password as string, user.passwordHash);
+  const valid = await verifyPassword(password, user.passwordHash);
   if (!valid) {
     res.status(401).json({ error: "Invalid email or password" });
     return;
