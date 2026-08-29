@@ -1,5 +1,5 @@
 import type { Response } from "express";
-import { eq, and, gte, lt } from "drizzle-orm";
+import { eq, and, gte, lt, sql } from "drizzle-orm";
 import {
   db,
   consumersTable,
@@ -56,8 +56,12 @@ export const getMonthData = async (req: AuthedRequest, res: Response) => {
   const [consumers, mealRows, expenseRows, depositEntryRows] =
     await Promise.all([
       db
-        .select({ id: consumersTable.id, name: consumersTable.name })
+        .select({
+          id: consumersTable.id,
+          name: sql<string>`coalesce(${usersTable.name}, ${consumersTable.name})`,
+        })
         .from(consumersTable)
+        .leftJoin(usersTable, eq(consumersTable.userId, usersTable.id))
         .where(eq(consumersTable.messId, mess.id)),
       db
         .select()
@@ -147,7 +151,9 @@ export const setMeal = async (req: AuthedRequest, res: Response) => {
   }
   const mealCount = parseDecimal(count);
   if (mealCount === null) {
-    res.status(400).json({ error: "count must be a non-negative number with up to 3 decimal places" });
+    res.status(400).json({
+      error: "count must be a non-negative number with up to 3 decimal places",
+    });
     return;
   }
   await db
@@ -201,7 +207,8 @@ export const setExpense = async (req: AuthedRequest, res: Response) => {
     )
   ) {
     res.status(400).json({
-      error: "Each expense needs a name and a non-negative amount with up to 3 decimal places",
+      error:
+        "Each expense needs a name and a non-negative amount with up to 3 decimal places",
     });
     return;
   }
@@ -211,7 +218,11 @@ export const setExpense = async (req: AuthedRequest, res: Response) => {
       messId: mess.id,
       yearMonth,
       day: parseInt(day, 10),
-      items: normalizedItems as Array<{ id: string; name: string; amount: number }>,
+      items: normalizedItems as Array<{
+        id: string;
+        name: string;
+        amount: number;
+      }>,
     })
     .onConflictDoUpdate({
       target: [

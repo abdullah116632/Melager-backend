@@ -1,5 +1,5 @@
 import type { Response } from "express";
-import { eq, and } from "drizzle-orm";
+import { eq, and, sql } from "drizzle-orm";
 import {
   db,
   messesTable,
@@ -168,13 +168,13 @@ export const getMemberRequests = async (req: AuthedRequest, res: Response) => {
     .select({
       id: memberRequestsTable.id,
       userId: memberRequestsTable.userId,
-      name: memberRequestsTable.name,
+      name: usersTable.name,
       email: usersTable.email,
       status: memberRequestsTable.status,
       createdAt: memberRequestsTable.createdAt,
     })
     .from(memberRequestsTable)
-    .leftJoin(usersTable, eq(memberRequestsTable.userId, usersTable.id))
+    .innerJoin(usersTable, eq(memberRequestsTable.userId, usersTable.id))
     .where(
       and(
         eq(memberRequestsTable.messId, mess.id),
@@ -284,7 +284,7 @@ export const getConsumers = async (req: AuthedRequest, res: Response) => {
   const consumers = await db
     .select({
       id: consumersTable.id,
-      name: consumersTable.name,
+      name: sql<string>`coalesce(${usersTable.name}, ${consumersTable.name})`,
       userId: consumersTable.userId,
       isAdmin: consumersTable.isAdmin,
       accountDeletedAt: consumersTable.accountDeletedAt,
@@ -295,6 +295,38 @@ export const getConsumers = async (req: AuthedRequest, res: Response) => {
     .leftJoin(usersTable, eq(consumersTable.userId, usersTable.id))
     .where(eq(consumersTable.messId, mess.id));
   res.json({ consumers });
+};
+
+export const lookupConsumerUser = async (req: AuthedRequest, res: Response) => {
+  const userId = req.auth!.userId;
+  const access = await resolveMessAccess(userId, req.query.messId, {
+    adminOnly: true,
+    missingMessIdError: "messId query param is required",
+  });
+  if (!access.ok) {
+    res.status(access.status).json({ error: access.error });
+    return;
+  }
+
+  const rawEmail = req.query.email;
+  if (typeof rawEmail !== "string" || !rawEmail.trim()) {
+    res.status(400).json({ error: "Email is required" });
+    return;
+  }
+
+  const normalizedEmail = normalizeEmail(rawEmail);
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) {
+    res.status(400).json({ error: "A valid email address is required" });
+    return;
+  }
+
+  const [user] = await db
+    .select({ name: usersTable.name })
+    .from(usersTable)
+    .where(eq(usersTable.email, normalizedEmail))
+    .limit(1);
+
+  res.json(user ? { exists: true, name: user.name } : { exists: false });
 };
 
 // POST /api/mess/consumers — admin only; body: { messId, name, email, mobileNumber }
@@ -320,7 +352,7 @@ export const addConsumer = async (req: AuthedRequest, res: Response) => {
     return;
   }
 
-  const consumerName = (name as string).trim();
+  const requestedName = (name as string).trim();
   const normalizedEmail = normalizeEmail(email as string);
   const normalizedMobile = (mobileNumber as string | undefined)?.trim() || null;
 
@@ -330,7 +362,7 @@ export const addConsumer = async (req: AuthedRequest, res: Response) => {
   }
 
   const [existingUser] = await db
-    .select({ id: usersTable.id })
+    .select({ id: usersTable.id, name: usersTable.name })
     .from(usersTable)
     .where(eq(usersTable.email, normalizedEmail))
     .limit(1);
@@ -357,14 +389,14 @@ export const addConsumer = async (req: AuthedRequest, res: Response) => {
       .insert(consumersTable)
       .values({
         messId: mess.id,
-        name: consumerName,
+        name: existingUser.name,
         userId: existingUser.id,
       })
       .returning({ id: consumersTable.id, name: consumersTable.name });
 
     sendExistingMemberAddedEmail(
       normalizedEmail,
-      consumerName,
+      existingUser.name,
       mess.name,
       mess.messKey,
     ).catch((err: unknown) => {
@@ -382,7 +414,7 @@ export const addConsumer = async (req: AuthedRequest, res: Response) => {
     .insert(usersTable)
     .values({
       email: normalizedEmail,
-      name: consumerName,
+      name: requestedName,
       passwordHash,
       mobileNumber: normalizedMobile,
     })
@@ -390,7 +422,7 @@ export const addConsumer = async (req: AuthedRequest, res: Response) => {
 
   sendWelcomeEmail(
     normalizedEmail,
-    consumerName,
+    requestedName,
     mess.name,
     plainPassword,
   ).catch((err: unknown) => {
@@ -399,7 +431,7 @@ export const addConsumer = async (req: AuthedRequest, res: Response) => {
 
   const [consumer] = await db
     .insert(consumersTable)
-    .values({ messId: mess.id, name: consumerName, userId: newUser.id })
+    .values({ messId: mess.id, name: requestedName, userId: newUser.id })
     .returning({ id: consumersTable.id, name: consumersTable.name });
 
   res.json({ consumer, invitationSent: false });

@@ -5,6 +5,8 @@ import {
   usersTable,
   messesTable,
   consumersTable,
+  memberRequestsTable,
+  otpVerificationsTable,
   securityOtpsTable,
 } from "../db/dbConfig.js";
 import type { AuthedRequest } from "../middleware/auth.js";
@@ -688,7 +690,7 @@ export const getEligibleAdmins = async (req: AuthedRequest, res: Response) => {
   const consumers = await db
     .select({
       id: consumersTable.id,
-      name: consumersTable.name,
+      name: sql<string>`coalesce(${usersTable.name}, ${consumersTable.name})`,
       userId: consumersTable.userId,
       isAdmin: consumersTable.isAdmin,
       email: usersTable.email,
@@ -716,10 +718,38 @@ export const updateProfile = async (req: AuthedRequest, res: Response) => {
     res.status(400).json({ error: "Name is too long" });
     return;
   }
-  await db
-    .update(usersTable)
-    .set({ name: normalizedName })
-    .where(eq(usersTable.id, userId));
+  const updated = await db.transaction(async (tx) => {
+    const [user] = await tx
+      .update(usersTable)
+      .set({ name: normalizedName })
+      .where(eq(usersTable.id, userId))
+      .returning({ email: usersTable.email });
+
+    if (!user) return false;
+
+    await tx
+      .update(consumersTable)
+      .set({ name: normalizedName })
+      .where(eq(consumersTable.userId, userId));
+
+    await tx
+      .update(memberRequestsTable)
+      .set({ name: normalizedName })
+      .where(eq(memberRequestsTable.userId, userId));
+
+    await tx
+      .update(otpVerificationsTable)
+      .set({ name: normalizedName })
+      .where(eq(otpVerificationsTable.email, user.email));
+
+    return true;
+  });
+
+  if (!updated) {
+    res.status(404).json({ error: "User not found" });
+    return;
+  }
+
   res.json({ name: normalizedName });
 };
 

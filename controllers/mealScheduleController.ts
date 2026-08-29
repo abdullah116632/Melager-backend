@@ -1,10 +1,11 @@
 import type { Response } from "express";
-import { and, eq, gt } from "drizzle-orm";
+import { and, eq, gt, sql } from "drizzle-orm";
 import {
   db,
   consumersTable,
   mealControlTable,
   mealOptOutsTable,
+  usersTable,
 } from "../db/dbConfig.js";
 import type { AuthedRequest } from "../middleware/auth.js";
 import {
@@ -401,8 +402,12 @@ export const getMealOptOuts = async (req: AuthedRequest, res: Response) => {
         ),
       ),
     db
-      .select({ id: consumersTable.id, name: consumersTable.name })
+      .select({
+        id: consumersTable.id,
+        name: sql<string>`coalesce(${usersTable.name}, ${consumersTable.name})`,
+      })
       .from(consumersTable)
+      .leftJoin(usersTable, eq(consumersTable.userId, usersTable.id))
       .where(eq(consumersTable.messId, messId)),
   ]);
 

@@ -10,6 +10,7 @@ import {
   getMessInfo,
   inviteToMess,
   joinMess,
+  lookupConsumerUser,
   rejoinMess,
   rejectMemberRequest,
 } from "../controllers/messController.js";
@@ -32,6 +33,7 @@ router.post(
 );
 router.get("/mess/info", requireAuth, getMessInfo);
 router.get("/mess/consumers", requireAuth, getConsumers);
+router.get("/mess/consumer-user", requireAuth, lookupConsumerUser);
 router.post("/mess/consumers", requireAuth, addConsumer);
 router.delete("/mess/consumers/:id", requireAuth, deleteConsumer);
 router.post("/mess/invite", requireAuth, inviteToMess);
