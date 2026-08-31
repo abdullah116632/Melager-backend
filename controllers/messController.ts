@@ -362,7 +362,11 @@ export const addConsumer = async (req: AuthedRequest, res: Response) => {
   }
 
   const [existingUser] = await db
-    .select({ id: usersTable.id, name: usersTable.name })
+    .select({
+      id: usersTable.id,
+      name: usersTable.name,
+      mobileNumber: usersTable.mobileNumber,
+    })
     .from(usersTable)
     .where(eq(usersTable.email, normalizedEmail))
     .limit(1);
@@ -403,7 +407,17 @@ export const addConsumer = async (req: AuthedRequest, res: Response) => {
       req.log.error({ err }, "Failed to send added-to-mess email");
     });
 
-    res.json({ consumer, invitationSent: true });
+    res.json({
+      consumer: {
+        ...consumer,
+        userId: existingUser.id,
+        email: normalizedEmail,
+        mobileNumber: existingUser.mobileNumber,
+        isAdmin: false,
+        accountDeletedAt: null,
+      },
+      invitationSent: true,
+    });
     return;
   }
 
@@ -434,7 +448,17 @@ export const addConsumer = async (req: AuthedRequest, res: Response) => {
     .values({ messId: mess.id, name: requestedName, userId: newUser.id })
     .returning({ id: consumersTable.id, name: consumersTable.name });
 
-  res.json({ consumer, invitationSent: false });
+  res.json({
+    consumer: {
+      ...consumer,
+      userId: newUser.id,
+      email: normalizedEmail,
+      mobileNumber: normalizedMobile,
+      isAdmin: false,
+      accountDeletedAt: null,
+    },
+    invitationSent: false,
+  });
 };
 
 // DELETE /api/mess/consumers/:id?messId=X — admin only; cannot delete admin consumers

@@ -59,6 +59,11 @@ export const getMonthData = async (req: AuthedRequest, res: Response) => {
         .select({
           id: consumersTable.id,
           name: sql<string>`coalesce(${usersTable.name}, ${consumersTable.name})`,
+          userId: consumersTable.userId,
+          email: usersTable.email,
+          mobileNumber: usersTable.mobileNumber,
+          isAdmin: consumersTable.isAdmin,
+          accountDeletedAt: consumersTable.accountDeletedAt,
         })
         .from(consumersTable)
         .leftJoin(usersTable, eq(consumersTable.userId, usersTable.id))
