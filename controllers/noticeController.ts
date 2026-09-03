@@ -73,17 +73,36 @@ export const createNotice = async (req: AuthedRequest, res: Response) => {
   }
 
   const notice = await db.transaction(async (tx) => {
-    const [serialRow] = await tx
-      .select({ maxSerial: sql<number>`coalesce(max(${noticesTable.serialNo}), 0)` })
+    const existingNotices = await tx
+      .select({ id: noticesTable.id, serialNo: noticesTable.serialNo })
       .from(noticesTable)
-      .where(eq(noticesTable.messId, access.messId));
-    const serialNo = Number(serialRow?.maxSerial ?? 0) + 1;
+      .where(eq(noticesTable.messId, access.messId))
+      .orderBy(asc(noticesTable.serialNo));
+    const offset = existingNotices.length + 1;
+
+    if (existingNotices.length > 0) {
+      await tx
+        .update(noticesTable)
+        .set({ serialNo: sql`${noticesTable.serialNo} + ${offset}` })
+        .where(eq(noticesTable.messId, access.messId));
+      for (const [index, existingNotice] of existingNotices.entries()) {
+        await tx
+          .update(noticesTable)
+          .set({ serialNo: index + 2 })
+          .where(
+            and(
+              eq(noticesTable.id, existingNotice.id),
+              eq(noticesTable.messId, access.messId),
+            ),
+          );
+      }
+    }
 
     const [created] = await tx
       .insert(noticesTable)
       .values({
         messId: access.messId,
-        serialNo,
+        serialNo: 1,
         title: input.title,
         body: input.body,
         color: input.color,
