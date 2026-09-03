@@ -186,6 +186,54 @@ export const memberRequestsTable = pgTable(
   ],
 );
 
+export const noticesTable = pgTable(
+  "notices",
+  {
+    id: serial("id").primaryKey(),
+    messId: integer("mess_id")
+      .notNull()
+      .references(() => messesTable.id),
+    serialNo: integer("serial_no").notNull(),
+    title: text("title").notNull(),
+    body: text("body").notNull(),
+    color: text("color").notNull().default("#FFFFFF"),
+    createdByUserId: integer("created_by_user_id")
+      .notNull()
+      .references(() => usersTable.id),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  },
+  (t) => [
+    unique("notices_mess_serial_uq").on(t.messId, t.serialNo),
+    index("notices_mess_serial_idx").on(t.messId, t.serialNo),
+  ],
+);
+
+export const notificationsTable = pgTable(
+  "notifications",
+  {
+    id: serial("id").primaryKey(),
+    messId: integer("mess_id")
+      .notNull()
+      .references(() => messesTable.id),
+    userId: integer("user_id")
+      .notNull()
+      .references(() => usersTable.id),
+    noticeId: integer("notice_id").references(() => noticesTable.id, {
+      onDelete: "set null",
+    }),
+    type: text("type").notNull(),
+    title: text("title").notNull(),
+    body: text("body").notNull(),
+    readAt: timestamp("read_at"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (t) => [
+    index("notifications_user_created_idx").on(t.userId, t.createdAt),
+    index("notifications_mess_created_idx").on(t.messId, t.createdAt),
+  ],
+);
+
 // One complete snapshot per mess/date: all three availability flags, windows,
 // and menus live in the same row for compact storage and a single-row read.
 export const mealControlTable = pgTable(
@@ -274,3 +322,5 @@ export type User = typeof usersTable.$inferSelect;
 export type Mess = typeof messesTable.$inferSelect;
 export type Consumer = typeof consumersTable.$inferSelect;
 export type MemberRequest = typeof memberRequestsTable.$inferSelect;
+export type Notice = typeof noticesTable.$inferSelect;
+export type Notification = typeof notificationsTable.$inferSelect;
