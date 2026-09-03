@@ -15,6 +15,9 @@ ON "bazar_items" ("mess_id", "weekday");
 CREATE INDEX IF NOT EXISTS "bazar_items_mess_idx"
 ON "bazar_items" ("mess_id");
 
+ALTER TABLE "bazar_items"
+  ADD COLUMN IF NOT EXISTS "is_completed" boolean NOT NULL DEFAULT false;
+
 CREATE TABLE IF NOT EXISTS "bazar_assignments" (
   "id" serial PRIMARY KEY,
   "mess_id" integer NOT NULL REFERENCES "messes"("id"),

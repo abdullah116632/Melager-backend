@@ -246,6 +246,7 @@ export const bazarItemsTable = pgTable(
     price: numeric("price", { precision: 14, scale: 3, mode: "number" })
       .notNull()
       .default(0),
+    isCompleted: boolean("is_completed").notNull().default(false),
     createdByUserId: integer("created_by_user_id")
       .notNull()
       .references(() => usersTable.id),

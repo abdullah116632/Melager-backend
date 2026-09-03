@@ -12,9 +12,9 @@ import { parsePositiveInteger } from "../utils/numberUtils.js";
 
 const MAX_TITLE_LENGTH = 160;
 const MAX_BODY_LENGTH = 5000;
-const DEFAULT_NOTICE_COLOR = "#FFFFFF";
+const DEFAULT_NOTICE_COLOR = "#F0FDFA";
 const NOTICE_COLORS = new Set([
-  "#FFFFFF",
+  "#F0FDFA",
   "#FEF3C7",
   "#DBEAFE",
   "#DCFCE7",
