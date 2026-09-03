@@ -22,6 +22,7 @@
     "utils/**/*",
     "lib/**/*",
     "middleware/**/*",
+    "realtime/**/*",
     "db/**/*",
     "zod/**/*",
     "drizzle.config.ts"

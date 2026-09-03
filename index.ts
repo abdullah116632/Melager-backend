@@ -1,6 +1,8 @@
 import "dotenv/config";
+import { createServer } from "node:http";
 import app from "./app.js";
 import { logger } from "./lib/logger.js";
+import { initializeRealtime } from "./realtime/socket.js";
 
 const rawPort = process.env["PORT"];
 
@@ -17,11 +19,16 @@ if (Number.isNaN(port) || port <= 0) {
   throw new Error(`Invalid PORT value: "${rawPort}"`);
 }
 
-app.listen({ port, host: "0.0.0.0" }, (err) => {
+const httpServer = createServer(app);
+initializeRealtime(httpServer);
+
+httpServer.once("error", (err) => {
   if (err) {
     logger.error({ err }, "Error listening on port");
     process.exit(1);
   }
+});
 
+httpServer.listen({ port, host: "0.0.0.0" }, () => {
   logger.info({ port, host: "0.0.0.0" }, "Server listening");
 });
