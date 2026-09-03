@@ -34,6 +34,11 @@ app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
+app.use("/api", (req: Request, _res: Response, next: NextFunction) => {
+  console.log(`[API] ${req.method} /api${req.path}`);
+  next();
+});
+
 app.use("/api", router);
 
 // eslint-disable-next-line @typescript-eslint/no-unused-vars

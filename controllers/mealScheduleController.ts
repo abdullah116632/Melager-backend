@@ -1,5 +1,5 @@
 import type { Response } from "express";
-import { and, eq, gt, sql } from "drizzle-orm";
+import { and, eq, gt, gte, inArray, isNull, lte, or, sql } from "drizzle-orm";
 import {
   db,
   consumersTable,
@@ -23,6 +23,101 @@ import {
 import { resolveMessAccess } from "../utils/messAccessUtils.js";
 import { parsePositiveInteger } from "../utils/numberUtils.js";
 
+type MealOptOutScope = "day" | "ongoing";
+
+const ISO_DATE_PATTERN = /^\d{4}-(0[1-9]|1[0-2])-([0-2]\d|3[01])$/;
+const YEAR_MONTH_PATTERN = /^\d{4}-(0[1-9]|1[0-2])$/;
+
+const isValidIsoDate = (date: string): boolean => {
+  if (!ISO_DATE_PATTERN.test(date)) return false;
+  const value = new Date(`${date}T00:00:00.000Z`);
+  return (
+    !Number.isNaN(value.getTime()) && value.toISOString().slice(0, 10) === date
+  );
+};
+
+const getMonthEnd = (yearMonth: string): string => {
+  const [year, month] = yearMonth.split("-").map(Number);
+  const lastDay = new Date(Date.UTC(year!, month!, 0)).getUTCDate();
+  return `${yearMonth}-${String(lastDay).padStart(2, "0")}`;
+};
+
+const getEffectiveMealOptOuts = (messId: number, date: string) =>
+  db
+    .select()
+    .from(mealOptOutsTable)
+    .where(
+      and(
+        eq(mealOptOutsTable.messId, messId),
+        or(
+          and(
+            eq(mealOptOutsTable.scope, "day"),
+            eq(mealOptOutsTable.date, date),
+          ),
+          and(
+            eq(mealOptOutsTable.scope, "ongoing"),
+            lte(mealOptOutsTable.date, date),
+            or(
+              isNull(mealOptOutsTable.endedDate),
+              gt(mealOptOutsTable.endedDate, date),
+            ),
+          ),
+        ),
+      ),
+    );
+
+const getSchedulePayload = async (
+  messId: number,
+  consumerId: number | null,
+  date: string,
+) => {
+  const [schedule, allConsumers, optOutRows] = await Promise.all([
+    getMergedSchedule(messId, date),
+    db
+      .select({ id: consumersTable.id })
+      .from(consumersTable)
+      .where(eq(consumersTable.messId, messId)),
+    getEffectiveMealOptOuts(messId, date),
+  ]);
+
+  const totalConsumers = allConsumers.length;
+  const effectiveOptOutKeys = new Set(
+    optOutRows.map((item) => `${item.consumerId}:${item.mealType}`),
+  );
+  const myOptOuts = consumerId
+    ? MEAL_TYPES.filter((mealType) =>
+        effectiveOptOutKeys.has(`${consumerId}:${mealType}`),
+      )
+    : [];
+  const optOutCountByMeal: Record<string, number> = {};
+  for (const key of effectiveOptOutKeys) {
+    const mealType = key.split(":")[1]!;
+    optOutCountByMeal[mealType] = (optOutCountByMeal[mealType] ?? 0) + 1;
+  }
+
+  const activeByMeal = {
+    breakfast: schedule.breakfastEnabled
+      ? Math.max(0, totalConsumers - (optOutCountByMeal.breakfast ?? 0))
+      : 0,
+    lunch: schedule.lunchEnabled
+      ? Math.max(0, totalConsumers - (optOutCountByMeal.lunch ?? 0))
+      : 0,
+    dinner: schedule.dinnerEnabled
+      ? Math.max(0, totalConsumers - (optOutCountByMeal.dinner ?? 0))
+      : 0,
+  };
+
+  return {
+    date,
+    schedule,
+    myOptOuts,
+    totalConsumers,
+    activeByMeal,
+    totalActive:
+      activeByMeal.breakfast + activeByMeal.lunch + activeByMeal.dinner,
+  };
+};
+
 // GET /api/mess/today-schedule?messId=X[&date=YYYY-MM-DD]
 export const getTodaySchedule = async (req: AuthedRequest, res: Response) => {
   const userId = req.auth!.userId;
@@ -41,57 +136,100 @@ export const getTodaySchedule = async (req: AuthedRequest, res: Response) => {
     return;
   }
   await ensureMealControlSnapshots(messId, date);
+  res.json(await getSchedulePayload(messId, consumerId, date));
+};
 
-  const [schedule, allConsumers, optOutRows] = await Promise.all([
-    getMergedSchedule(messId, date),
-    db
-      .select({ id: consumersTable.id })
-      .from(consumersTable)
-      .where(eq(consumersTable.messId, messId)),
-    db
-      .select()
-      .from(mealOptOutsTable)
-      .where(
-        and(
-          eq(mealOptOutsTable.messId, messId),
-          eq(mealOptOutsTable.date, date),
-        ),
-      ),
-  ]);
-
-  const totalConsumers = allConsumers.length;
-  const myOptOuts = consumerId
-    ? optOutRows
-        .filter((item) => item.consumerId === consumerId)
-        .map((item) => item.mealType)
-    : [];
-  const optOutCountByMeal: Record<string, number> = {};
-  for (const item of optOutRows) {
-    optOutCountByMeal[item.mealType] =
-      (optOutCountByMeal[item.mealType] ?? 0) + 1;
+// GET /api/v2/mess/meal-status/day?messId=X&date=YYYY-MM-DD
+// Additive v2 endpoint: unlike the legacy "today-schedule" route, this is a
+// read-only view over any date and never materializes rows for distant dates.
+export const getMealStatusDayV2 = async (req: AuthedRequest, res: Response) => {
+  const userId = req.auth!.userId;
+  const access = await resolveMessAccess(userId, req.query.messId);
+  if (!access.ok) {
+    res.status(access.status).json({ error: access.error });
+    return;
   }
 
-  const activeByMeal = {
-    breakfast: schedule.breakfastEnabled
-      ? Math.max(0, totalConsumers - (optOutCountByMeal.breakfast ?? 0))
-      : 0,
-    lunch: schedule.lunchEnabled
-      ? Math.max(0, totalConsumers - (optOutCountByMeal.lunch ?? 0))
-      : 0,
-    dinner: schedule.dinnerEnabled
-      ? Math.max(0, totalConsumers - (optOutCountByMeal.dinner ?? 0))
-      : 0,
-  };
+  const date = String(req.query.date ?? getTodayDate());
+  if (!isValidIsoDate(date)) {
+    res.status(400).json({ error: "date must be a valid YYYY-MM-DD value" });
+    return;
+  }
 
-  res.json({
-    date,
-    schedule,
-    myOptOuts,
-    totalConsumers,
-    activeByMeal,
-    totalActive:
-      activeByMeal.breakfast + activeByMeal.lunch + activeByMeal.dinner,
-  });
+  res.json(await getSchedulePayload(access.messId, access.consumerId, date));
+};
+
+// GET /api/v2/mess/meal-status/calendar?messId=X&yearMonth=YYYY-MM
+// Returns only the signed-in consumer's marked days. Day rows mark one date;
+// ongoing rows mark every date from their start until (but not including) end.
+export const getMealStatusCalendarV2 = async (
+  req: AuthedRequest,
+  res: Response,
+) => {
+  const userId = req.auth!.userId;
+  const yearMonth = String(req.query.yearMonth ?? "");
+  if (!YEAR_MONTH_PATTERN.test(yearMonth)) {
+    res.status(400).json({ error: "yearMonth must use YYYY-MM format" });
+    return;
+  }
+
+  const access = await resolveMessAccess(userId, req.query.messId);
+  if (!access.ok) {
+    res.status(access.status).json({ error: access.error });
+    return;
+  }
+  if (!access.consumerId) {
+    res.json({ yearMonth, days: [] });
+    return;
+  }
+
+  const monthStart = `${yearMonth}-01`;
+  const monthEnd = getMonthEnd(yearMonth);
+  const rows = await db
+    .select({
+      date: mealOptOutsTable.date,
+      mealType: mealOptOutsTable.mealType,
+      scope: mealOptOutsTable.scope,
+      endedDate: mealOptOutsTable.endedDate,
+    })
+    .from(mealOptOutsTable)
+    .where(
+      and(
+        eq(mealOptOutsTable.messId, access.messId),
+        eq(mealOptOutsTable.consumerId, access.consumerId),
+        or(
+          and(
+            eq(mealOptOutsTable.scope, "day"),
+            gte(mealOptOutsTable.date, monthStart),
+            lte(mealOptOutsTable.date, monthEnd),
+          ),
+          and(
+            eq(mealOptOutsTable.scope, "ongoing"),
+            lte(mealOptOutsTable.date, monthEnd),
+            or(
+              isNull(mealOptOutsTable.endedDate),
+              gt(mealOptOutsTable.endedDate, monthStart),
+            ),
+          ),
+        ),
+      ),
+    );
+
+  const days: Array<{ date: string; meals: MealType[] }> = [];
+  for (let date = monthStart; date <= monthEnd; date = addDays(date, 1)) {
+    const meals = MEAL_TYPES.filter((mealType) =>
+      rows.some(
+        (row) =>
+          row.mealType === mealType &&
+          (row.scope === "day"
+            ? row.date === date
+            : row.date <= date && (!row.endedDate || row.endedDate > date)),
+      ),
+    );
+    if (meals.length > 0) days.push({ date, meals });
+  }
+
+  res.json({ yearMonth, days });
 };
 
 // PUT /api/mess/meal-schedule — admin updates one daily control row
@@ -277,11 +415,15 @@ export const setMealSchedule = async (req: AuthedRequest, res: Response) => {
   res.json({ success: true });
 };
 
-// POST /api/mess/meal-opt-out — consumer toggles one meal
-export const toggleMealOptOut = async (req: AuthedRequest, res: Response) => {
+const handleToggleMealOptOut = async (
+  req: AuthedRequest,
+  res: Response,
+  options: { unlimitedFuture: boolean },
+) => {
   const userId = req.auth!.userId;
-  const { messId: messIdRaw, date, mealType } = req.body ?? {};
+  const { messId: messIdRaw, date, mealType, scope: scopeRaw } = req.body ?? {};
   const messId = parsePositiveInteger(messIdRaw);
+  const scope: MealOptOutScope = scopeRaw === "ongoing" ? "ongoing" : "day";
 
   if (!messId) {
     res.status(400).json({ error: "messId is required" });
@@ -303,13 +445,19 @@ export const toggleMealOptOut = async (req: AuthedRequest, res: Response) => {
 
   const targetDate = (date as string) ?? getTodayDate();
   const today = getTodayDate();
-  if (isBeyondFutureLimit(targetDate)) {
+  if (options.unlimitedFuture && !isValidIsoDate(targetDate)) {
+    res.status(400).json({ error: "date must be a valid YYYY-MM-DD value" });
+    return;
+  }
+  if (!options.unlimitedFuture && isBeyondFutureLimit(targetDate)) {
     res.status(400).json({
       error: `Meal on/off is only available up to ${MAX_FUTURE_DAYS} days ahead`,
     });
     return;
   }
-  await ensureMealControlSnapshots(messId, targetDate);
+  if (!options.unlimitedFuture) {
+    await ensureMealControlSnapshots(messId, targetDate);
+  }
   const schedule = await getMergedSchedule(messId, targetDate);
   const enabledKey = `${mealType}Enabled` as keyof typeof schedule;
   if (!schedule[enabledKey]) {
@@ -338,34 +486,65 @@ export const toggleMealOptOut = async (req: AuthedRequest, res: Response) => {
     }
   }
 
-  const [existing] = await db
-    .select({ id: mealOptOutsTable.id })
-    .from(mealOptOutsTable)
-    .where(
-      and(
-        eq(mealOptOutsTable.messId, messId),
-        eq(mealOptOutsTable.consumerId, consumerId),
-        eq(mealOptOutsTable.date, targetDate),
-        eq(mealOptOutsTable.mealType, mealType as string),
-      ),
-    )
-    .limit(1);
+  const effectiveRows = (
+    await getEffectiveMealOptOuts(messId, targetDate)
+  ).filter(
+    (item) =>
+      item.consumerId === consumerId && item.mealType === (mealType as string),
+  );
 
-  if (existing) {
-    await db
-      .delete(mealOptOutsTable)
-      .where(eq(mealOptOutsTable.id, existing.id));
-    res.json({ isOptedOut: false });
+  if (effectiveRows.length > 0) {
+    const dayIds = effectiveRows
+      .filter((item) => item.scope === "day")
+      .map((item) => item.id);
+    const ongoingIds = effectiveRows
+      .filter((item) => item.scope === "ongoing")
+      .map((item) => item.id);
+
+    if (dayIds.length > 0) {
+      await db
+        .delete(mealOptOutsTable)
+        .where(inArray(mealOptOutsTable.id, dayIds));
+    }
+    if (ongoingIds.length > 0) {
+      await db
+        .update(mealOptOutsTable)
+        .set({ endedDate: targetDate })
+        .where(inArray(mealOptOutsTable.id, ongoingIds));
+    }
+    res.json({ isOptedOut: false, scope: null });
   } else {
-    await db.insert(mealOptOutsTable).values({
-      messId,
-      consumerId,
-      date: targetDate,
-      mealType: mealType as string,
-    });
-    res.json({ isOptedOut: true });
+    await db
+      .insert(mealOptOutsTable)
+      .values({
+        messId,
+        consumerId,
+        date: targetDate,
+        mealType: mealType as string,
+        scope,
+        endedDate: null,
+      })
+      .onConflictDoUpdate({
+        target: [
+          mealOptOutsTable.messId,
+          mealOptOutsTable.consumerId,
+          mealOptOutsTable.date,
+          mealOptOutsTable.mealType,
+        ],
+        set: { scope, endedDate: null },
+      });
+    res.json({ isOptedOut: true, scope });
   }
 };
+
+// POST /api/mess/meal-opt-out — legacy endpoint kept unchanged for old apps.
+export const toggleMealOptOut = (req: AuthedRequest, res: Response) =>
+  handleToggleMealOptOut(req, res, { unlimitedFuture: false });
+
+// POST /api/v2/mess/meal-status/opt-out — supports any future date without
+// creating a meal-control snapshot for every date between today and the target.
+export const toggleMealOptOutV2 = (req: AuthedRequest, res: Response) =>
+  handleToggleMealOptOut(req, res, { unlimitedFuture: true });
 
 // GET /api/mess/meal-opt-outs?messId=X&date=YYYY-MM-DD
 export const getMealOptOuts = async (req: AuthedRequest, res: Response) => {
@@ -392,15 +571,7 @@ export const getMealOptOuts = async (req: AuthedRequest, res: Response) => {
   await ensureMealControlSnapshots(messId, date);
 
   const [optOutRows, consumerRows] = await Promise.all([
-    db
-      .select()
-      .from(mealOptOutsTable)
-      .where(
-        and(
-          eq(mealOptOutsTable.messId, messId),
-          eq(mealOptOutsTable.date, date),
-        ),
-      ),
+    getEffectiveMealOptOuts(messId, date),
     db
       .select({
         id: consumersTable.id,

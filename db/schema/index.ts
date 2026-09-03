@@ -228,11 +228,21 @@ export const mealOptOutsTable = pgTable(
       .references(() => consumersTable.id),
     date: text("date").notNull(),
     mealType: text("meal_type").notNull(),
+    scope: text("scope").notNull().default("day"),
+    // For an ongoing opt-out, this is the first date the meal is active again.
+    // Keeping the interval preserves correct historical meal status.
+    endedDate: text("ended_date"),
     createdAt: timestamp("created_at").defaultNow().notNull(),
   },
   (t) => [
     unique("meal_opt_outs_uq").on(t.messId, t.consumerId, t.date, t.mealType),
     index("meal_opt_outs_mess_date_idx").on(t.messId, t.date),
+    index("meal_opt_outs_ongoing_idx").on(
+      t.messId,
+      t.consumerId,
+      t.mealType,
+      t.scope,
+    ),
   ],
 );
 

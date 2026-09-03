@@ -10,6 +10,7 @@
     "typecheck": "tsc --noEmit",
     "db:push": "dotenv -e .env -- drizzle-kit push",
     "db:push:force": "dotenv -e .env -- drizzle-kit push --force",
+    "db:migrate:meal-opt-out-scope": "dotenv -e .env -- tsx ./scripts/migrateMealOptOutScope.ts",
     "codegen": "orval --config ./orval.config.ts",
     "format": "prettier --write \"{app,index}.ts\" \"{controllers,routes,utils,lib,middleware}/**/*.{ts,tsx}\""
   },
