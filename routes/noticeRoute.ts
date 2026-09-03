@@ -8,6 +8,7 @@ import {
   reorderNotices,
   updateNotice,
 } from "../controllers/noticeController.js";
+import { registerPushToken } from "../controllers/pushTokenController.js";
 import { requireAuth } from "../middleware/auth.js";
 
 const router = Router();
@@ -19,5 +20,6 @@ router.patch("/mess/notices/:id", requireAuth, updateNotice);
 router.delete("/mess/notices/:id", requireAuth, deleteNotice);
 router.get("/mess/notifications", requireAuth, getNotifications);
 router.post("/mess/notifications/:id/read", requireAuth, markNotificationRead);
+router.post("/devices/push-token", requireAuth, registerPushToken);
 
 export default router;

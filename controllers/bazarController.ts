@@ -13,6 +13,7 @@ import {
 import type { AuthedRequest } from "../middleware/auth.js";
 import { resolveMessAccess } from "../utils/messAccessUtils.js";
 import { parsePositiveInteger } from "../utils/numberUtils.js";
+import { deliverNotifications } from "../lib/notificationDelivery.js";
 
 const MAX_ITEM_NAME_LENGTH = 160;
 const WEEKDAYS = new Set([0, 1, 2, 3, 4, 5, 6]);
@@ -297,19 +298,21 @@ export const assignBazarMember = async (req: AuthedRequest, res: Response) => {
       })
       .onConflictDoNothing()
       .returning();
-    if (assignment && consumer.userId) {
-      await tx
+    const notifications = assignment && consumer.userId
+      ? await tx
         .insert(notificationsTable)
-        .values(buildBazarAssignmentNotification(access.messId, consumer.userId, weekday));
-    }
-    return assignment ?? null;
+        .values(buildBazarAssignmentNotification(access.messId, consumer.userId, weekday))
+        .returning()
+      : [];
+    return { assignment: assignment ?? null, notifications };
   });
 
-  if (!result) {
+  if (!result.assignment) {
     res.status(409).json({ error: "This member is already assigned for that day" });
     return;
   }
-  res.status(201).json({ assignment: { ...result, name: consumer.name, email: consumer.email } });
+  void deliverNotifications(result.notifications);
+  res.status(201).json({ assignment: { ...result.assignment, name: consumer.name, email: consumer.email } });
 };
 
 export const assignBazarMembers = async (req: AuthedRequest, res: Response) => {
@@ -357,6 +360,7 @@ export const assignBazarMembers = async (req: AuthedRequest, res: Response) => {
 
   const created = await db.transaction(async (tx) => {
     const assignments = [];
+    const notifications = [];
     for (const consumer of selectedConsumers) {
       const [assignment] = await tx
         .insert(bazarAssignmentsTable)
@@ -371,15 +375,18 @@ export const assignBazarMembers = async (req: AuthedRequest, res: Response) => {
       if (!assignment) continue;
       assignments.push({ ...assignment, name: consumer.name, email: consumer.email });
       if (consumer.userId) {
-        await tx
+        const [notification] = await tx
           .insert(notificationsTable)
-          .values(buildBazarAssignmentNotification(access.messId, consumer.userId, weekday));
+          .values(buildBazarAssignmentNotification(access.messId, consumer.userId, weekday))
+          .returning();
+        if (notification) notifications.push(notification);
       }
     }
-    return assignments;
+    return { assignments, notifications };
   });
 
-  res.status(201).json({ assignments: created });
+  void deliverNotifications(created.notifications);
+  res.status(201).json({ assignments: created.assignments });
 };
 
 export const unassignBazarMember = async (req: AuthedRequest, res: Response) => {

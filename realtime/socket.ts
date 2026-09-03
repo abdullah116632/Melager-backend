@@ -17,6 +17,7 @@ type RealtimeSocket = Socket<
 >;
 
 export const messRoom = (messId: number): string => `mess:${messId}`;
+export const userRoom = (userId: number): string => `user:${userId}`;
 let realtimeServer: Server | null = null;
 
 /**
@@ -60,6 +61,7 @@ export const initializeRealtime = (httpServer: HttpServer): Server => {
   io.on("connection", (socket) => {
     const realtimeSocket = socket as RealtimeSocket;
     realtimeSocket.join(messRoom(realtimeSocket.data.messId));
+    realtimeSocket.join(userRoom(realtimeSocket.data.userId));
     logger.debug(
       { socketId: socket.id, userId: realtimeSocket.data.userId, messId: realtimeSocket.data.messId },
       "Realtime client connected",
@@ -84,4 +86,13 @@ export const emitToMess = (
   payload: unknown,
 ): void => {
   realtimeServer?.to(messRoom(messId)).emit(event, payload);
+};
+
+/** Emit a private event to every signed-in device belonging to one user. */
+export const emitToUser = (
+  userId: number,
+  event: string,
+  payload: unknown,
+): void => {
+  realtimeServer?.to(userRoom(userId)).emit(event, payload);
 };

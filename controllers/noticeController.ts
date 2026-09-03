@@ -9,6 +9,7 @@ import {
 import type { AuthedRequest } from "../middleware/auth.js";
 import { resolveMessAccess } from "../utils/messAccessUtils.js";
 import { parsePositiveInteger } from "../utils/numberUtils.js";
+import { deliverNotifications } from "../lib/notificationDelivery.js";
 
 const MAX_TITLE_LENGTH = 160;
 const MAX_BODY_LENGTH = 5000;
@@ -72,7 +73,7 @@ export const createNotice = async (req: AuthedRequest, res: Response) => {
     return;
   }
 
-  const notice = await db.transaction(async (tx) => {
+  const result = await db.transaction(async (tx) => {
     const existingNotices = await tx
       .select({ id: noticesTable.id, serialNo: noticesTable.serialNo })
       .from(noticesTable)
@@ -129,14 +130,16 @@ export const createNotice = async (req: AuthedRequest, res: Response) => {
         title: input.title,
         body: input.body,
       }));
-    if (notificationRows.length > 0) {
-      await tx.insert(notificationsTable).values(notificationRows);
-    }
+    const notifications =
+      notificationRows.length > 0
+        ? await tx.insert(notificationsTable).values(notificationRows).returning()
+        : [];
 
-    return created;
+    return { notice: created!, notifications };
   });
 
-  res.status(201).json({ notice });
+  void deliverNotifications(result.notifications);
+  res.status(201).json({ notice: result.notice });
 };
 
 export const updateNotice = async (req: AuthedRequest, res: Response) => {

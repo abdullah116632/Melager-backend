@@ -11,6 +11,7 @@ import {
 import type { AuthedRequest } from "../middleware/auth.js";
 import { resolveMessAccess } from "../utils/messAccessUtils.js";
 import { parsePositiveInteger } from "../utils/numberUtils.js";
+import { deliverNotifications } from "../lib/notificationDelivery.js";
 
 const DEFAULT_MESSAGE_LIMIT = 30;
 const MAX_MESSAGE_LIMIT = 50;
@@ -105,7 +106,7 @@ export const createMessage = async (req: AuthedRequest, res: Response) => {
     return;
   }
 
-  const message = await db.transaction(async (tx) => {
+  const result = await db.transaction(async (tx) => {
     const [created] = await tx
       .insert(messagesTable)
       .values({
@@ -134,15 +135,17 @@ export const createMessage = async (req: AuthedRequest, res: Response) => {
         title: `New message from ${sender.name}`,
         body: body.length > 140 ? `${body.slice(0, 137)}...` : body,
       }));
-    if (notificationRows.length > 0) {
-      await tx.insert(notificationsTable).values(notificationRows);
-    }
+    const notifications =
+      notificationRows.length > 0
+        ? await tx.insert(notificationsTable).values(notificationRows).returning()
+        : [];
 
     return {
-      ...created!,
-      senderName: sender.name,
+      message: { ...created!, senderName: sender.name },
+      notifications,
     };
   });
 
-  res.status(201).json({ message });
+  void deliverNotifications(result.notifications);
+  res.status(201).json({ message: result.message });
 };

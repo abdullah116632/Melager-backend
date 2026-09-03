@@ -234,6 +234,23 @@ export const notificationsTable = pgTable(
   ],
 );
 
+// A user may sign in on several phones. Tokens belong to a device and are
+// replaced when that device signs in with a different account.
+export const pushTokensTable = pgTable(
+  "push_tokens",
+  {
+    id: serial("id").primaryKey(),
+    userId: integer("user_id")
+      .notNull()
+      .references(() => usersTable.id, { onDelete: "cascade" }),
+    token: text("token").notNull().unique(),
+    platform: text("platform").notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (t) => [index("push_tokens_user_idx").on(t.userId)],
+);
+
 export const messagesTable = pgTable(
   "messages",
   {
