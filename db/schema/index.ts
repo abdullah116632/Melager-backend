@@ -234,6 +234,56 @@ export const notificationsTable = pgTable(
   ],
 );
 
+export const bazarItemsTable = pgTable(
+  "bazar_items",
+  {
+    id: serial("id").primaryKey(),
+    messId: integer("mess_id")
+      .notNull()
+      .references(() => messesTable.id),
+    weekday: integer("weekday").notNull(),
+    name: text("name").notNull(),
+    price: numeric("price", { precision: 14, scale: 3, mode: "number" })
+      .notNull()
+      .default(0),
+    createdByUserId: integer("created_by_user_id")
+      .notNull()
+      .references(() => usersTable.id),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  },
+  (t) => [
+    index("bazar_items_mess_weekday_idx").on(t.messId, t.weekday),
+    index("bazar_items_mess_idx").on(t.messId),
+  ],
+);
+
+export const bazarAssignmentsTable = pgTable(
+  "bazar_assignments",
+  {
+    id: serial("id").primaryKey(),
+    messId: integer("mess_id")
+      .notNull()
+      .references(() => messesTable.id),
+    weekday: integer("weekday").notNull(),
+    consumerId: integer("consumer_id")
+      .notNull()
+      .references(() => consumersTable.id, { onDelete: "cascade" }),
+    assignedByUserId: integer("assigned_by_user_id")
+      .notNull()
+      .references(() => usersTable.id),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (t) => [
+    unique("bazar_assignments_mess_weekday_consumer_uq").on(
+      t.messId,
+      t.weekday,
+      t.consumerId,
+    ),
+    index("bazar_assignments_mess_weekday_idx").on(t.messId, t.weekday),
+  ],
+);
+
 // One complete snapshot per mess/date: all three availability flags, windows,
 // and menus live in the same row for compact storage and a single-row read.
 export const mealControlTable = pgTable(
@@ -324,3 +374,5 @@ export type Consumer = typeof consumersTable.$inferSelect;
 export type MemberRequest = typeof memberRequestsTable.$inferSelect;
 export type Notice = typeof noticesTable.$inferSelect;
 export type Notification = typeof notificationsTable.$inferSelect;
+export type BazarItem = typeof bazarItemsTable.$inferSelect;
+export type BazarAssignment = typeof bazarAssignmentsTable.$inferSelect;
