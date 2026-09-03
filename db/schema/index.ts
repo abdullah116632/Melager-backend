@@ -234,6 +234,26 @@ export const notificationsTable = pgTable(
   ],
 );
 
+export const messagesTable = pgTable(
+  "messages",
+  {
+    id: serial("id").primaryKey(),
+    messId: integer("mess_id")
+      .notNull()
+      .references(() => messesTable.id, { onDelete: "cascade" }),
+    senderUserId: integer("sender_user_id")
+      .notNull()
+      .references(() => usersTable.id),
+    body: text("body").notNull(),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  },
+  (t) => [
+    index("messages_mess_created_id_idx").on(t.messId, t.createdAt, t.id),
+    index("messages_sender_created_idx").on(t.senderUserId, t.createdAt),
+  ],
+);
+
 export const bazarItemsTable = pgTable(
   "bazar_items",
   {

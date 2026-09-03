@@ -8,6 +8,7 @@ import mealScheduleRouter from "./mealScheduleRoute.js";
 import depositEntriesRouter from "./depositEntriesRoute.js";
 import noticeRouter from "./noticeRoute.js";
 import bazarRouter from "./bazarRoute.js";
+import messageRouter from "./messageRoute.js";
 
 const router: IRouter = Router();
 
@@ -20,5 +21,6 @@ router.use(mealScheduleRouter);
 router.use(depositEntriesRouter);
 router.use(noticeRouter);
 router.use(bazarRouter);
+router.use(messageRouter);
 
 export default router;
