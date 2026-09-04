@@ -34,7 +34,9 @@ const notificationRoute = (type: string): string =>
     ? "/notice-board"
     : type === "message"
       ? "/messages"
-      : "/bazar-list";
+      : type === "menu"
+        ? "/meal-status"
+        : "/bazar-list";
 
 const deliverPushes = async (deliveries: PushDelivery[]): Promise<void> => {
   if (deliveries.length === 0) return;

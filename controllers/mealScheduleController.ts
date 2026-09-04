@@ -5,8 +5,10 @@ import {
   consumersTable,
   mealControlTable,
   mealOptOutsTable,
+  notificationsTable,
   usersTable,
 } from "../db/dbConfig.js";
+import { deliverNotifications } from "../lib/notificationDelivery.js";
 import type { AuthedRequest } from "../middleware/auth.js";
 import {
   addDays,
@@ -27,6 +29,34 @@ type MealOptOutScope = "day" | "ongoing";
 
 const ISO_DATE_PATTERN = /^\d{4}-(0[1-9]|1[0-2])-([0-2]\d|3[01])$/;
 const YEAR_MONTH_PATTERN = /^\d{4}-(0[1-9]|1[0-2])$/;
+
+const normalizeMenu = (value: unknown): string | null => {
+  if (typeof value !== "string") return null;
+  const menu = value.trim();
+  return menu || null;
+};
+
+const menuUpdates = (
+  existing: {
+    breakfastMenu: string | null;
+    lunchMenu: string | null;
+    dinnerMenu: string | null;
+  },
+  next: {
+    breakfastMenu: string | null;
+    lunchMenu: string | null;
+    dinnerMenu: string | null;
+  },
+) =>
+  (
+    [
+      ["Breakfast", existing.breakfastMenu, next.breakfastMenu],
+      ["Lunch", existing.lunchMenu, next.lunchMenu],
+      ["Dinner", existing.dinnerMenu, next.dinnerMenu],
+    ] as const
+  ).flatMap(([mealLabel, previous, menu]) =>
+    menu && menu !== previous ? [{ mealLabel, isNew: !previous, menu }] : [],
+  );
 
 const isValidIsoDate = (date: string): boolean => {
   if (!ISO_DATE_PATTERN.test(date)) return false;
@@ -328,31 +358,68 @@ export const setMealSchedule = async (req: AuthedRequest, res: Response) => {
     lunchOptOutEnd: (lunchOptOutEnd as string | null) ?? null,
     dinnerOptOutStart: (dinnerOptOutStart as string | null) ?? null,
     dinnerOptOutEnd: (dinnerOptOutEnd as string | null) ?? null,
-    breakfastMenu: (breakfastMenu as string | null) ?? null,
-    lunchMenu: (lunchMenu as string | null) ?? null,
-    dinnerMenu: (dinnerMenu as string | null) ?? null,
+    breakfastMenu: normalizeMenu(breakfastMenu),
+    lunchMenu: normalizeMenu(lunchMenu),
+    dinnerMenu: normalizeMenu(dinnerMenu),
   };
+  const changedMenus = menuUpdates(existingSchedule, values);
 
-  await db
-    .insert(mealControlTable)
-    .values(values)
-    .onConflictDoUpdate({
-      target: [mealControlTable.messId, mealControlTable.date],
-      set: {
-        breakfastEnabled: values.breakfastEnabled,
-        lunchEnabled: values.lunchEnabled,
-        dinnerEnabled: values.dinnerEnabled,
-        breakfastOptOutStart: values.breakfastOptOutStart,
-        breakfastOptOutEnd: values.breakfastOptOutEnd,
-        lunchOptOutStart: values.lunchOptOutStart,
-        lunchOptOutEnd: values.lunchOptOutEnd,
-        dinnerOptOutStart: values.dinnerOptOutStart,
-        dinnerOptOutEnd: values.dinnerOptOutEnd,
-        breakfastMenu: values.breakfastMenu,
-        lunchMenu: values.lunchMenu,
-        dinnerMenu: values.dinnerMenu,
-      },
-    });
+  const notifications = await db.transaction(async (tx) => {
+    await tx
+      .insert(mealControlTable)
+      .values(values)
+      .onConflictDoUpdate({
+        target: [mealControlTable.messId, mealControlTable.date],
+        set: {
+          breakfastEnabled: values.breakfastEnabled,
+          lunchEnabled: values.lunchEnabled,
+          dinnerEnabled: values.dinnerEnabled,
+          breakfastOptOutStart: values.breakfastOptOutStart,
+          breakfastOptOutEnd: values.breakfastOptOutEnd,
+          lunchOptOutStart: values.lunchOptOutStart,
+          lunchOptOutEnd: values.lunchOptOutEnd,
+          dinnerOptOutStart: values.dinnerOptOutStart,
+          dinnerOptOutEnd: values.dinnerOptOutEnd,
+          breakfastMenu: values.breakfastMenu,
+          lunchMenu: values.lunchMenu,
+          dinnerMenu: values.dinnerMenu,
+        },
+      });
+
+    if (changedMenus.length === 0) return [];
+    const recipients = await tx
+      .select({ userId: consumersTable.userId })
+      .from(consumersTable)
+      .where(
+        and(
+          eq(consumersTable.messId, messId),
+          isNull(consumersTable.accountDeletedAt),
+        ),
+      );
+    const recipientUserIds = [
+      ...new Set(
+        recipients.flatMap((recipient) =>
+          recipient.userId == null ? [] : [recipient.userId],
+        ),
+      ),
+    ];
+    if (recipientUserIds.length === 0) return [];
+
+    return tx
+      .insert(notificationsTable)
+      .values(
+        recipientUserIds.flatMap((recipientUserId) =>
+          changedMenus.map((change) => ({
+            messId,
+            userId: recipientUserId,
+            type: "menu",
+            title: `${change.mealLabel} menu ${change.isNew ? "set" : "updated"}`,
+            body: `Menu for ${targetDate}: ${change.menu}`,
+          })),
+        ),
+      )
+      .returning();
+  });
 
   // Changes made today update the baseline fields in snapshots that may
   // already exist. Future-date edits remain isolated to the selected row.
@@ -412,6 +479,7 @@ export const setMealSchedule = async (req: AuthedRequest, res: Response) => {
     }
   }
 
+  void deliverNotifications(notifications);
   res.json({ success: true });
 };
 
