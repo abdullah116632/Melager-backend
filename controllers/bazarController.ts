@@ -1,19 +1,19 @@
 import type { Response } from "express";
 import { randomUUID } from "node:crypto";
-import { and, asc, desc, eq, isNull } from "drizzle-orm";
+import { and, asc, count, desc, eq, isNull } from "drizzle-orm";
 import {
+  bazarAssignmentNotificationsTable,
   bazarAssignmentsTable,
   bazarItemsTable,
   consumersTable,
   db,
   expenseDaysTable,
-  notificationsTable,
   usersTable,
 } from "../db/dbConfig.js";
 import type { AuthedRequest } from "../middleware/auth.js";
 import { resolveMessAccess } from "../utils/messAccessUtils.js";
 import { parsePositiveInteger } from "../utils/numberUtils.js";
-import { deliverNotifications } from "../lib/notificationDelivery.js";
+import { deliverBazarAssignmentPushes } from "../lib/notificationDelivery.js";
 
 const MAX_ITEM_NAME_LENGTH = 160;
 const WEEKDAYS = new Set([0, 1, 2, 3, 4, 5, 6]);
@@ -36,10 +36,14 @@ const readItemFields = (body: unknown) => {
   const name = String(input?.name ?? "").trim();
   const price = parsePrice(input?.price);
   if (!name || name.length > MAX_ITEM_NAME_LENGTH) {
-    return { error: `name is required and must be at most ${MAX_ITEM_NAME_LENGTH} characters` };
+    return {
+      error: `name is required and must be at most ${MAX_ITEM_NAME_LENGTH} characters`,
+    };
   }
   if (price === null) {
-    return { error: "price must be a non-negative number with up to 3 decimals" };
+    return {
+      error: "price must be a non-negative number with up to 3 decimals",
+    };
   }
   return { name, price };
 };
@@ -66,10 +70,16 @@ export const getBazar = async (req: AuthedRequest, res: Response) => {
         email: usersTable.email,
       })
       .from(bazarAssignmentsTable)
-      .innerJoin(consumersTable, eq(bazarAssignmentsTable.consumerId, consumersTable.id))
+      .innerJoin(
+        consumersTable,
+        eq(bazarAssignmentsTable.consumerId, consumersTable.id),
+      )
       .leftJoin(usersTable, eq(consumersTable.userId, usersTable.id))
       .where(eq(bazarAssignmentsTable.messId, access.messId))
-      .orderBy(asc(bazarAssignmentsTable.weekday), asc(bazarAssignmentsTable.id)),
+      .orderBy(
+        asc(bazarAssignmentsTable.weekday),
+        asc(bazarAssignmentsTable.id),
+      ),
   ]);
 
   res.json({ items, assignments });
@@ -80,13 +90,14 @@ export const createBazarItem = async (req: AuthedRequest, res: Response) => {
   const weekday = parseWeekday(req.body?.weekday);
   if ("error" in input || weekday === null) {
     res.status(400).json({
-      error: "error" in input ? input.error : "weekday must be an integer from 0 to 6",
+      error:
+        "error" in input
+          ? input.error
+          : "weekday must be an integer from 0 to 6",
     });
     return;
   }
-  const access = await resolveMessAccess(req.auth!.userId, req.body?.messId, {
-    adminOnly: true,
-  });
+  const access = await resolveMessAccess(req.auth!.userId, req.body?.messId);
   if (!access.ok) {
     res.status(access.status).json({ error: access.error });
     return;
@@ -125,7 +136,12 @@ export const updateBazarItem = async (req: AuthedRequest, res: Response) => {
   const [item] = await db
     .update(bazarItemsTable)
     .set({ name: input.name, price: input.price, updatedAt: new Date() })
-    .where(and(eq(bazarItemsTable.id, itemId), eq(bazarItemsTable.messId, access.messId)))
+    .where(
+      and(
+        eq(bazarItemsTable.id, itemId),
+        eq(bazarItemsTable.messId, access.messId),
+      ),
+    )
     .returning();
   if (!item) {
     res.status(404).json({ error: "Bazar item not found" });
@@ -134,11 +150,16 @@ export const updateBazarItem = async (req: AuthedRequest, res: Response) => {
   res.json({ item });
 };
 
-export const updateBazarItemStatus = async (req: AuthedRequest, res: Response) => {
+export const updateBazarItemStatus = async (
+  req: AuthedRequest,
+  res: Response,
+) => {
   const itemId = parsePositiveInteger(req.params.id);
   const completed = req.body?.completed;
   if (!itemId || typeof completed !== "boolean") {
-    res.status(400).json({ error: "item id and completed status are required" });
+    res
+      .status(400)
+      .json({ error: "item id and completed status are required" });
     return;
   }
   const access = await resolveMessAccess(req.auth!.userId, req.body?.messId);
@@ -150,7 +171,12 @@ export const updateBazarItemStatus = async (req: AuthedRequest, res: Response) =
   const [item] = await db
     .update(bazarItemsTable)
     .set({ isCompleted: completed, updatedAt: new Date() })
-    .where(and(eq(bazarItemsTable.id, itemId), eq(bazarItemsTable.messId, access.messId)))
+    .where(
+      and(
+        eq(bazarItemsTable.id, itemId),
+        eq(bazarItemsTable.messId, access.messId),
+      ),
+    )
     .returning();
   if (!item) {
     res.status(404).json({ error: "Bazar item not found" });
@@ -173,7 +199,12 @@ export const deleteBazarItem = async (req: AuthedRequest, res: Response) => {
 
   const [item] = await db
     .delete(bazarItemsTable)
-    .where(and(eq(bazarItemsTable.id, itemId), eq(bazarItemsTable.messId, access.messId)))
+    .where(
+      and(
+        eq(bazarItemsTable.id, itemId),
+        eq(bazarItemsTable.messId, access.messId),
+      ),
+    )
     .returning({ id: bazarItemsTable.id });
   if (!item) {
     res.status(404).json({ error: "Bazar item not found" });
@@ -196,12 +227,20 @@ export const deleteBazarItems = async (req: AuthedRequest, res: Response) => {
 
   const deleted = await db
     .delete(bazarItemsTable)
-    .where(and(eq(bazarItemsTable.messId, access.messId), eq(bazarItemsTable.weekday, weekday)))
+    .where(
+      and(
+        eq(bazarItemsTable.messId, access.messId),
+        eq(bazarItemsTable.weekday, weekday),
+      ),
+    )
     .returning({ id: bazarItemsTable.id });
   res.json({ success: true, deletedCount: deleted.length });
 };
 
-export const addBazarItemsToExpense = async (req: AuthedRequest, res: Response) => {
+export const addBazarItemsToExpense = async (
+  req: AuthedRequest,
+  res: Response,
+) => {
   const { yearMonth, day, preview } = req.body ?? {};
   const access = await resolveMessAccess(req.auth!.userId, req.body?.messId, {
     adminOnly: true,
@@ -211,44 +250,68 @@ export const addBazarItemsToExpense = async (req: AuthedRequest, res: Response) 
     res.status(access.status).json({ error: access.error });
     return;
   }
-  if (!/^\d{4}-\d{2}$/.test(String(yearMonth)) || !Number.isInteger(parsedDay) || parsedDay < 1 || parsedDay > 31) {
+  if (
+    !/^\d{4}-\d{2}$/.test(String(yearMonth)) ||
+    !Number.isInteger(parsedDay) ||
+    parsedDay < 1 ||
+    parsedDay > 31
+  ) {
     res.status(400).json({ error: "valid yearMonth and day are required" });
     return;
   }
 
   const result = await db.transaction(async (tx) => {
     const [bazarItems, expense] = await Promise.all([
-      tx.select({ name: bazarItemsTable.name, price: bazarItemsTable.price })
+      tx
+        .select({ name: bazarItemsTable.name, price: bazarItemsTable.price })
         .from(bazarItemsTable)
         .where(eq(bazarItemsTable.messId, access.messId)),
-      tx.select({ items: expenseDaysTable.items })
+      tx
+        .select({ items: expenseDaysTable.items })
         .from(expenseDaysTable)
-        .where(and(
-          eq(expenseDaysTable.messId, access.messId),
-          eq(expenseDaysTable.yearMonth, String(yearMonth)),
-          eq(expenseDaysTable.day, parsedDay),
-        )),
+        .where(
+          and(
+            eq(expenseDaysTable.messId, access.messId),
+            eq(expenseDaysTable.yearMonth, String(yearMonth)),
+            eq(expenseDaysTable.day, parsedDay),
+          ),
+        ),
     ]);
     const existingItems = expense[0]?.items ?? [];
-    const existingKeys = new Set(existingItems.map((item) => `${item.name}\u0000${item.amount}`));
-    const newItems = bazarItems.filter((item) => {
-      const key = `${item.name}\u0000${item.price}`;
-      if (existingKeys.has(key)) return false;
-      existingKeys.add(key);
-      return true;
-    }).map((item) => ({ id: randomUUID(), name: item.name, amount: item.price }));
+    const existingKeys = new Set(
+      existingItems.map((item) => `${item.name}\u0000${item.amount}`),
+    );
+    const newItems = bazarItems
+      .filter((item) => {
+        const key = `${item.name}\u0000${item.price}`;
+        if (existingKeys.has(key)) return false;
+        existingKeys.add(key);
+        return true;
+      })
+      .map((item) => ({
+        id: randomUUID(),
+        name: item.name,
+        amount: item.price,
+      }));
 
     if (!preview && newItems.length > 0) {
       const mergedItems = [...existingItems, ...newItems];
-      await tx.insert(expenseDaysTable).values({
-        messId: access.messId,
-        yearMonth: String(yearMonth),
-        day: parsedDay,
-        items: mergedItems,
-      }).onConflictDoUpdate({
-        target: [expenseDaysTable.messId, expenseDaysTable.yearMonth, expenseDaysTable.day],
-        set: { items: mergedItems },
-      });
+      await tx
+        .insert(expenseDaysTable)
+        .values({
+          messId: access.messId,
+          yearMonth: String(yearMonth),
+          day: parsedDay,
+          items: mergedItems,
+        })
+        .onConflictDoUpdate({
+          target: [
+            expenseDaysTable.messId,
+            expenseDaysTable.yearMonth,
+            expenseDaysTable.day,
+          ],
+          set: { items: mergedItems },
+        });
     }
     return { newItems, alreadyAddedAll: newItems.length === 0 };
   });
@@ -272,7 +335,12 @@ export const assignBazarMember = async (req: AuthedRequest, res: Response) => {
   }
 
   const [consumer] = await db
-    .select({ id: consumersTable.id, userId: consumersTable.userId, name: usersTable.name, email: usersTable.email })
+    .select({
+      id: consumersTable.id,
+      userId: consumersTable.userId,
+      name: usersTable.name,
+      email: usersTable.email,
+    })
     .from(consumersTable)
     .leftJoin(usersTable, eq(consumersTable.userId, usersTable.id))
     .where(
@@ -298,21 +366,22 @@ export const assignBazarMember = async (req: AuthedRequest, res: Response) => {
       })
       .onConflictDoNothing()
       .returning();
-    const notifications = assignment && consumer.userId
-      ? await tx
-        .insert(notificationsTable)
-        .values(buildBazarAssignmentNotification(access.messId, consumer.userId, weekday))
-        .returning()
-      : [];
-    return { assignment: assignment ?? null, notifications };
+    return { assignment: assignment ?? null };
   });
 
   if (!result.assignment) {
-    res.status(409).json({ error: "This member is already assigned for that day" });
+    res
+      .status(409)
+      .json({ error: "This member is already assigned for that day" });
     return;
   }
-  void deliverNotifications(result.notifications);
-  res.status(201).json({ assignment: { ...result.assignment, name: consumer.name, email: consumer.email } });
+  res.status(201).json({
+    assignment: {
+      ...result.assignment,
+      name: consumer.name,
+      email: consumer.email,
+    },
+  });
 };
 
 export const assignBazarMembers = async (req: AuthedRequest, res: Response) => {
@@ -332,7 +401,9 @@ export const assignBazarMembers = async (req: AuthedRequest, res: Response) => {
     consumerIds.some((id: unknown) => !parsePositiveInteger(id)) ||
     new Set(consumerIds).size !== consumerIds.length
   ) {
-    res.status(400).json({ error: "weekday and a unique consumerIds array are required" });
+    res
+      .status(400)
+      .json({ error: "weekday and a unique consumerIds array are required" });
     return;
   }
 
@@ -351,16 +422,21 @@ export const assignBazarMembers = async (req: AuthedRequest, res: Response) => {
         isNull(consumersTable.accountDeletedAt),
       ),
     );
-  const selectedIds = consumerIds.map((id: number) => parsePositiveInteger(id)!);
-  const selectedConsumers = consumers.filter((consumer) => selectedIds.includes(consumer.id));
+  const selectedIds = consumerIds.map((id: number) =>
+    parsePositiveInteger(id)!,
+  );
+  const selectedConsumers = consumers.filter((consumer) =>
+    selectedIds.includes(consumer.id),
+  );
   if (selectedConsumers.length !== selectedIds.length) {
-    res.status(404).json({ error: "One or more active mess members were not found" });
+    res
+      .status(404)
+      .json({ error: "One or more active mess members were not found" });
     return;
   }
 
   const created = await db.transaction(async (tx) => {
     const assignments = [];
-    const notifications = [];
     for (const consumer of selectedConsumers) {
       const [assignment] = await tx
         .insert(bazarAssignmentsTable)
@@ -373,23 +449,149 @@ export const assignBazarMembers = async (req: AuthedRequest, res: Response) => {
         .onConflictDoNothing()
         .returning();
       if (!assignment) continue;
-      assignments.push({ ...assignment, name: consumer.name, email: consumer.email });
-      if (consumer.userId) {
-        const [notification] = await tx
-          .insert(notificationsTable)
-          .values(buildBazarAssignmentNotification(access.messId, consumer.userId, weekday))
-          .returning();
-        if (notification) notifications.push(notification);
-      }
+      assignments.push({
+        ...assignment,
+        name: consumer.name,
+        email: consumer.email,
+      });
     }
-    return { assignments, notifications };
+    return { assignments };
   });
 
-  void deliverNotifications(created.notifications);
   res.status(201).json({ assignments: created.assignments });
 };
 
-export const unassignBazarMember = async (req: AuthedRequest, res: Response) => {
+export const notifyAssignedBazarMembers = async (
+  req: AuthedRequest,
+  res: Response,
+) => {
+  const weekday = parseWeekday(req.body?.weekday);
+  const access = await resolveMessAccess(req.auth!.userId, req.body?.messId, {
+    adminOnly: true,
+  });
+  if (!access.ok) {
+    res.status(access.status).json({ error: access.error });
+    return;
+  }
+  if (weekday === null) {
+    res.status(400).json({ error: "weekday is required" });
+    return;
+  }
+
+  const [item] = await db
+    .select({ id: bazarItemsTable.id })
+    .from(bazarItemsTable)
+    .where(
+      and(
+        eq(bazarItemsTable.messId, access.messId),
+        eq(bazarItemsTable.weekday, weekday),
+      ),
+    )
+    .limit(1);
+  if (!item) {
+    res.status(400).json({
+      error: "Add at least one bazar item before notifying assigned members",
+    });
+    return;
+  }
+
+  const recipients = await db.transaction(async (tx) => {
+    const assignments = await tx
+      .select({ userId: consumersTable.userId })
+      .from(bazarAssignmentsTable)
+      .innerJoin(
+        consumersTable,
+        eq(bazarAssignmentsTable.consumerId, consumersTable.id),
+      )
+      .where(
+        and(
+          eq(bazarAssignmentsTable.messId, access.messId),
+          eq(bazarAssignmentsTable.weekday, weekday),
+          isNull(consumersTable.accountDeletedAt),
+        ),
+      );
+    const recipientUserIds = [
+      ...new Set(
+        assignments.flatMap((assignment) =>
+          assignment.userId == null ? [] : [assignment.userId],
+        ),
+      ),
+    ];
+    if (recipientUserIds.length === 0) return [];
+    return tx
+      .insert(bazarAssignmentNotificationsTable)
+      .values(
+        recipientUserIds.map((userId) => ({
+          messId: access.messId,
+          userId,
+          weekday,
+        })),
+      )
+      .returning({ userId: bazarAssignmentNotificationsTable.userId });
+  });
+
+  if (recipients.length === 0) {
+    res.status(400).json({ error: "No assigned members with an app account" });
+    return;
+  }
+  void deliverBazarAssignmentPushes({
+    recipientUserIds: recipients.map(({ userId }) => userId),
+    messId: access.messId,
+    weekday,
+  });
+  res.json({ notifiedCount: recipients.length });
+};
+
+export const getUnreadBazarAssignmentCount = async (
+  req: AuthedRequest,
+  res: Response,
+) => {
+  const access = await resolveMessAccess(req.auth!.userId, req.query.messId);
+  if (!access.ok) {
+    res.status(access.status).json({ error: access.error });
+    return;
+  }
+
+  const [result] = await db
+    .select({ total: count() })
+    .from(bazarAssignmentNotificationsTable)
+    .where(
+      and(
+        eq(bazarAssignmentNotificationsTable.messId, access.messId),
+        eq(bazarAssignmentNotificationsTable.userId, req.auth!.userId),
+        isNull(bazarAssignmentNotificationsTable.readAt),
+      ),
+    );
+  res.json({ unreadCount: Number(result?.total ?? 0) });
+};
+
+export const markBazarAssignmentNotificationsRead = async (
+  req: AuthedRequest,
+  res: Response,
+) => {
+  const access = await resolveMessAccess(req.auth!.userId, req.body?.messId);
+  if (!access.ok) {
+    res.status(access.status).json({ error: access.error });
+    return;
+  }
+
+  await db
+    .update(bazarAssignmentNotificationsTable)
+    .set({ readAt: new Date() })
+    .where(
+      and(
+        eq(bazarAssignmentNotificationsTable.messId, access.messId),
+        eq(bazarAssignmentNotificationsTable.userId, req.auth!.userId),
+        isNull(bazarAssignmentNotificationsTable.readAt),
+      ),
+    );
+  res.json({ unreadCount: 0 });
+};
+
+export const unassignBazarMember = async (
+  req: AuthedRequest,
+  res: Response,
+) => {
   const assignmentId = parsePositiveInteger(req.params.id);
   const access = await resolveMessAccess(req.auth!.userId, req.query.messId, {
     adminOnly: true,
@@ -402,7 +604,12 @@ export const unassignBazarMember = async (req: AuthedRequest, res: Response) => 
   }
   const [assignment] = await db
     .delete(bazarAssignmentsTable)
-    .where(and(eq(bazarAssignmentsTable.id, assignmentId), eq(bazarAssignmentsTable.messId, access.messId)))
+    .where(
+      and(
+        eq(bazarAssignmentsTable.id, assignmentId),
+        eq(bazarAssignmentsTable.messId, access.messId),
+      ),
+    )
     .returning({ id: bazarAssignmentsTable.id });
   if (!assignment) {
     res.status(404).json({ error: "Bazar assignment not found" });
@@ -410,18 +617,3 @@ export const unassignBazarMember = async (req: AuthedRequest, res: Response) => 
   }
   res.json({ success: true });
 };
-
-const weekdayName = (weekday: number) =>
-  ["Saturday", "Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday"][weekday] ?? "selected day";
-
-const buildBazarAssignmentNotification = (
-  messId: number,
-  userId: number,
-  weekday: number,
-) => ({
-  messId,
-  userId,
-  type: "bazar_assignment" as const,
-  title: "Bazar duty assigned",
-  body: `You have been assigned for ${weekdayName(weekday)} bazar.`,
-});

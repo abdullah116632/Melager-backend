@@ -366,6 +366,31 @@ export const bazarAssignmentsTable = pgTable(
   ],
 );
 
+// Bazar-duty alerts deliberately stay outside the general notifications table.
+// They only drive the Bazar List shortcut badge and are cleared on opening it.
+export const bazarAssignmentNotificationsTable = pgTable(
+  "bazar_assignment_notifications",
+  {
+    id: serial("id").primaryKey(),
+    messId: integer("mess_id")
+      .notNull()
+      .references(() => messesTable.id, { onDelete: "cascade" }),
+    userId: integer("user_id")
+      .notNull()
+      .references(() => usersTable.id, { onDelete: "cascade" }),
+    weekday: integer("weekday").notNull(),
+    readAt: timestamp("read_at"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (t) => [
+    index("bazar_assignment_notifications_user_idx").on(t.userId, t.createdAt),
+    index("bazar_assignment_notifications_mess_user_idx").on(
+      t.messId,
+      t.userId,
+    ),
+  ],
+);
+
 // One complete snapshot per mess/date: all three availability flags, windows,
 // and menus live in the same row for compact storage and a single-row read.
 export const mealControlTable = pgTable(

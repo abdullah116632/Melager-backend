@@ -226,3 +226,43 @@ export const deliverNoticePushes = async ({
       },
     })),
   );
+
+/** Sends Bazar-duty pushes and updates only the Bazar List unread badge. */
+export const deliverBazarAssignmentPushes = async ({
+  recipientUserIds,
+  messId,
+  weekday,
+}: {
+  recipientUserIds: number[];
+  messId: number;
+  weekday: number;
+}): Promise<void> => {
+  const weekdayName =
+    [
+      "Saturday",
+      "Sunday",
+      "Monday",
+      "Tuesday",
+      "Wednesday",
+      "Thursday",
+      "Friday",
+    ][weekday] ?? "selected day";
+
+  recipientUserIds.forEach((userId) => {
+    emitToUser(userId, "bazar-assignment:created", { messId });
+  });
+
+  await deliverPushes(
+    recipientUserIds.map((userId) => ({
+      userId,
+      title: "Bazar duty assigned",
+      body: `You have been assigned for ${weekdayName} bazar.`,
+      channelId: "default",
+      data: {
+        messId,
+        type: "bazar_assignment",
+        route: "/bazar-list",
+      },
+    })),
+  );
+};
