@@ -10,7 +10,9 @@ import {
   mealsTable,
   usersTable,
   memberRequestsTable,
+  notificationsTable,
 } from "../db/dbConfig.js";
+import { deliverNotifications } from "../lib/notificationDelivery.js";
 import type { AuthedRequest } from "../middleware/auth.js";
 import {
   sendExistingMemberAddedEmail,
@@ -103,6 +105,12 @@ export const joinMess = async (req: AuthedRequest, res: Response) => {
     return;
   }
 
+  const [user] = await db
+    .select({ name: usersTable.name })
+    .from(usersTable)
+    .where(eq(usersTable.id, userId))
+    .limit(1);
+
   const [existingRequest] = await db
     .select({ id: memberRequestsTable.id, status: memberRequestsTable.status })
     .from(memberRequestsTable)
@@ -121,20 +129,25 @@ export const joinMess = async (req: AuthedRequest, res: Response) => {
         .json({ error: "You already have a pending request for this mess" });
       return;
     }
-    if (existingRequest.status === "rejected") {
+    // An accepted request can remain as history after a manager removes the
+    // consumer. Re-open that request instead of hitting the unique constraint,
+    // so the same account can request to join again.
+    if (
+      existingRequest.status === "rejected" ||
+      existingRequest.status === "accepted"
+    ) {
       await updateMemberRequestStatus(existingRequest.id, "pending");
+      await createMemberRequestNotification({
+        messId: mess.id,
+        userId: mess.adminUserId,
+        requesterName: user?.name ?? "A member",
+      });
       res.json({
         pendingRequest: toPendingRequestResponse(existingRequest.id, mess),
       });
       return;
     }
   }
-
-  const [user] = await db
-    .select({ name: usersTable.name })
-    .from(usersTable)
-    .where(eq(usersTable.id, userId))
-    .limit(1);
 
   const [request] = await db
     .insert(memberRequestsTable)
@@ -145,6 +158,12 @@ export const joinMess = async (req: AuthedRequest, res: Response) => {
       status: "pending",
     })
     .returning();
+
+  await createMemberRequestNotification({
+    messId: mess.id,
+    userId: mess.adminUserId,
+    requesterName: user?.name ?? "A member",
+  });
 
   res.json({
     pendingRequest: toPendingRequestResponse(request.id, mess),
@@ -220,7 +239,41 @@ export const acceptMemberRequest = async (
     })
     .returning({ id: consumersTable.id, name: consumersTable.name });
 
+  const [notification] = await db
+    .insert(notificationsTable)
+    .values({
+      messId: mess.id,
+      userId: memberRequest.userId,
+      type: "member_request_accepted",
+      title: "Join request accepted",
+      body: `Your request to join ${mess.name} has been accepted.`,
+    })
+    .returning();
+  void deliverNotifications([notification]);
+
   res.json({ consumer });
+};
+
+const createMemberRequestNotification = async ({
+  messId,
+  userId,
+  requesterName,
+}: {
+  messId: number;
+  userId: number;
+  requesterName: string;
+}) => {
+  const [notification] = await db
+    .insert(notificationsTable)
+    .values({
+      messId,
+      userId,
+      type: "member_request",
+      title: "New join request",
+      body: `${requesterName} wants to join your mess.`,
+    })
+    .returning();
+  void deliverNotifications([notification]);
 };
 
 // POST /api/mess/member-requests/:id/reject — admin only
@@ -625,12 +678,28 @@ export const rejoinMess = async (req: AuthedRequest, res: Response) => {
   }
 
   const [mess] = await db
-    .select({ id: messesTable.id, name: messesTable.name })
+    .select({
+      id: messesTable.id,
+      name: messesTable.name,
+      adminUserId: messesTable.adminUserId,
+    })
     .from(messesTable)
     .where(eq(messesTable.id, existingRequest.messId))
     .limit(1);
 
   await updateMemberRequestStatus(existingRequest.id, "pending");
+  const [user] = await db
+    .select({ name: usersTable.name })
+    .from(usersTable)
+    .where(eq(usersTable.id, userId))
+    .limit(1);
+  if (mess) {
+    await createMemberRequestNotification({
+      messId: mess.id,
+      userId: mess.adminUserId,
+      requesterName: user?.name ?? "A member",
+    });
+  }
 
   res.json({
     request: toPendingRequestResponse(existingRequest.id, {

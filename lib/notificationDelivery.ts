@@ -30,7 +30,13 @@ type PushDelivery = {
 };
 
 const notificationRoute = (type: string): string =>
-  type === "notice"
+  type === "member_request"
+    ? "/member-requests"
+    : type === "member_request_accepted"
+      ? "/"
+      : type === "meal_opt_out"
+        ? "/meal-status"
+      : type === "notice"
     ? "/notice-board"
     : type === "message"
       ? "/messages"

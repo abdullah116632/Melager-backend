@@ -580,6 +580,14 @@ const handleToggleMealOptOut = async (
         .set({ endedDate: targetDate })
         .where(inArray(mealOptOutsTable.id, ongoingIds));
     }
+    await notifyManagersOfMealStatusChange({
+      messId,
+      actorUserId: userId,
+      actorConsumerId: consumerId,
+      mealType: mealType as MealType,
+      isOptedOut: false,
+      date: targetDate,
+    });
     res.json({ isOptedOut: false, scope: null });
   } else {
     await db
@@ -601,8 +609,75 @@ const handleToggleMealOptOut = async (
         ],
         set: { scope, endedDate: null },
       });
+    await notifyManagersOfMealStatusChange({
+      messId,
+      actorUserId: userId,
+      actorConsumerId: consumerId,
+      mealType: mealType as MealType,
+      isOptedOut: true,
+      date: targetDate,
+    });
     res.json({ isOptedOut: true, scope });
   }
+};
+
+const notifyManagersOfMealStatusChange = async ({
+  messId,
+  actorUserId,
+  actorConsumerId,
+  mealType,
+  isOptedOut,
+  date,
+}: {
+  messId: number;
+  actorUserId: number;
+  actorConsumerId: number;
+  mealType: MealType;
+  isOptedOut: boolean;
+  date: string;
+}) => {
+  const [actor, managers] = await Promise.all([
+    db
+      .select({ name: sql<string>`coalesce(${usersTable.name}, ${consumersTable.name})` })
+      .from(consumersTable)
+      .leftJoin(usersTable, eq(consumersTable.userId, usersTable.id))
+      .where(
+        and(
+          eq(consumersTable.id, actorConsumerId),
+          eq(consumersTable.messId, messId),
+        ),
+      )
+      .limit(1),
+    db
+      .select({ userId: consumersTable.userId })
+      .from(consumersTable)
+      .where(
+        and(
+          eq(consumersTable.messId, messId),
+          eq(consumersTable.isAdmin, true),
+          isNull(consumersTable.accountDeletedAt),
+          sql`${consumersTable.userId} is not null`,
+        ),
+      ),
+  ]);
+  const managerUserIds = [...new Set(managers.flatMap(({ userId }) => userId == null || userId === actorUserId ? [] : [userId]))];
+  if (managerUserIds.length === 0) return;
+
+  const mealLabel = mealType.charAt(0).toUpperCase() + mealType.slice(1);
+  const action = isOptedOut ? "turned off" : "turned on";
+  const notifications = await db
+    .insert(notificationsTable)
+    .values(
+      managerUserIds.map((userId) => ({
+        messId,
+        userId,
+        type: "meal_opt_out",
+        title: `${mealLabel} ${action}`,
+        body: `${actor[0]?.name ?? "A member"} ${action} ${mealType} for ${date}.`,
+      })),
+    )
+    .returning();
+  void deliverNotifications(notifications);
 };
 
 // POST /api/mess/meal-opt-out — legacy endpoint kept unchanged for old apps.
