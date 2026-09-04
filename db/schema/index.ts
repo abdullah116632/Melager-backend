@@ -1,3 +1,4 @@
+import { sql } from "drizzle-orm";
 import {
   pgTable,
   serial,
@@ -7,8 +8,10 @@ import {
   boolean,
   timestamp,
   jsonb,
+  bigserial,
   unique,
   index,
+  check,
 } from "drizzle-orm/pg-core";
 
 export const usersTable = pgTable("users", {
@@ -502,6 +505,71 @@ export const depositEntriesTable = pgTable(
   ],
 );
 
+// Durable receipt for mutations originating from an offline client. Feature
+// handlers must create/complete this row in the same transaction as the
+// business write so retries cannot apply the same mutation twice.
+export const syncClientMutationsTable = pgTable(
+  "sync_client_mutations",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    clientMutationId: text("client_mutation_id").notNull(),
+    userId: integer("user_id")
+      .notNull()
+      .references(() => usersTable.id, { onDelete: "cascade" }),
+    messId: integer("mess_id").references(() => messesTable.id, {
+      onDelete: "cascade",
+    }),
+    entityType: text("entity_type").notNull(),
+    entityId: text("entity_id").notNull(),
+    operation: text("operation").notNull(),
+    requestHash: text("request_hash").notNull(),
+    responseStatus: integer("response_status"),
+    responseBody: jsonb("response_body").$type<unknown>(),
+    completedAt: timestamp("completed_at"),
+    expiresAt: timestamp("expires_at").notNull(),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (t) => [
+    unique("sync_client_mutations_user_key_uq").on(
+      t.userId,
+      t.clientMutationId,
+    ),
+    index("sync_client_mutations_mess_idx").on(t.messId, t.id),
+    index("sync_client_mutations_expiry_idx").on(t.expiresAt),
+    check(
+      "sync_client_mutations_operation_check",
+      sql`${t.operation} in ('create', 'update', 'delete', 'upsert', 'command')`,
+    ),
+  ],
+);
+
+// Append-only feed consumed with `id` as the cursor. Payloads are intentionally
+// feature-owned so each local repository can normalize them into SQLite.
+export const syncChangesTable = pgTable(
+  "sync_changes",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    messId: integer("mess_id")
+      .notNull()
+      .references(() => messesTable.id, { onDelete: "cascade" }),
+    actorUserId: integer("actor_user_id").references(() => usersTable.id, {
+      onDelete: "set null",
+    }),
+    entityType: text("entity_type").notNull(),
+    entityId: text("entity_id").notNull(),
+    operation: text("operation").notNull(),
+    payload: jsonb("payload").notNull().$type<unknown>(),
+    changedAt: timestamp("changed_at").defaultNow().notNull(),
+  },
+  (t) => [
+    index("sync_changes_mess_cursor_idx").on(t.messId, t.id),
+    check(
+      "sync_changes_operation_check",
+      sql`${t.operation} in ('create', 'update', 'delete', 'upsert')`,
+    ),
+  ],
+);
+
 export type User = typeof usersTable.$inferSelect;
 export type Mess = typeof messesTable.$inferSelect;
 export type Consumer = typeof consumersTable.$inferSelect;
@@ -510,3 +578,5 @@ export type Notice = typeof noticesTable.$inferSelect;
 export type Notification = typeof notificationsTable.$inferSelect;
 export type BazarItem = typeof bazarItemsTable.$inferSelect;
 export type BazarAssignment = typeof bazarAssignmentsTable.$inferSelect;
+export type SyncClientMutation = typeof syncClientMutationsTable.$inferSelect;
+export type SyncChange = typeof syncChangesTable.$inferSelect;

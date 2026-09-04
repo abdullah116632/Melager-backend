@@ -15,10 +15,12 @@ import {
   updateBazarItemStatus,
 } from "../controllers/bazarController.js";
 import { requireAuth } from "../middleware/auth.js";
+import { syncBazarMutation } from "../controllers/bazarSyncController.js";
 
 const router = Router();
 
 router.get("/mess/bazar", requireAuth, getBazar);
+router.post("/mess/bazar/sync", requireAuth, syncBazarMutation);
 router.get(
   "/mess/bazar/assignments/unread-count",
   requireAuth,

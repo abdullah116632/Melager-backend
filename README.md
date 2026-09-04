@@ -17,6 +17,7 @@ npm run dev                # http://localhost:5000
 - `npm run build` — bundle to `dist/`
 - `npm start` — run the built bundle
 - `npm run db:push` — apply Drizzle schema to the configured DB
+- `npm run db:migrate:offline-sync` — add the idempotency ledger and cursor change feed tables
 - `npm run codegen` — regenerate Zod schemas from `openapi.yaml`
 - `npm run typecheck` — `tsc --noEmit`
 
@@ -44,13 +45,13 @@ build.mjs               esbuild bundler
 
 ## Env vars
 
-| Var | Required | Example |
-| --- | --- | --- |
-| `PORT` | yes | `5000` |
-| `DATABASE_URL` | yes | `postgresql://user:pass@ep-xxx.neon.tech/db?sslmode=require` |
-| `SESSION_SECRET` | yes | 48 random bytes hex |
-| `RESEND_API_KEY` | yes | `re_xxx` |
-| `RESEND_FROM_EMAIL` | yes | `Melager <noreply@yourdomain.com>` |
+| Var                 | Required | Example                                                      |
+| ------------------- | -------- | ------------------------------------------------------------ |
+| `PORT`              | yes      | `5000`                                                       |
+| `DATABASE_URL`      | yes      | `postgresql://user:pass@ep-xxx.neon.tech/db?sslmode=require` |
+| `SESSION_SECRET`    | yes      | 48 random bytes hex                                          |
+| `RESEND_API_KEY`    | yes      | `re_xxx`                                                     |
+| `RESEND_FROM_EMAIL` | yes      | `Melager <noreply@yourdomain.com>`                           |
 
 ## Deployment
 
