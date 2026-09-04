@@ -1,5 +1,5 @@
 import type { Response } from "express";
-import { eq, and, gte, lt, sql } from "drizzle-orm";
+import { eq, and, gt, gte, lt, sql } from "drizzle-orm";
 import {
   db,
   consumersTable,
@@ -8,6 +8,7 @@ import {
   expenseDaysTable,
   depositsTable,
   depositEntriesTable,
+  syncChangesTable,
 } from "../db/dbConfig.js";
 import type { AuthedRequest } from "../middleware/auth.js";
 import { sendMonthlySummaryEmail } from "../lib/email.js";
@@ -180,11 +181,22 @@ export const setMeal = async (req: AuthedRequest, res: Response) => {
       ],
       set: { count: mealCount },
     });
+  await db.insert(syncChangesTable).values({ messId: mess.id, actorUserId: userId, entityType: "daily_meal", entityId: `${yearMonth}:${consumerId}:${day}`, operation: "upsert", payload: { yearMonth, consumerId: String(consumerId), day: Number(day), count: mealCount } });
   emitToMess(mess.id, "meals:updated", {
     messId: mess.id,
     yearMonth,
   });
   res.json({ success: true });
+};
+
+export const getDailyMealChanges = async (req: AuthedRequest, res: Response) => {
+  const access = await resolveMessAccess(req.auth!.userId, req.query.messId);
+  if (!access.ok) { res.status(access.status).json({ error: access.error }); return; }
+  const yearMonth = String(req.query.yearMonth ?? "");
+  const cursor = Math.max(0, Number(req.query.cursor ?? 0));
+  if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(yearMonth) || !Number.isInteger(cursor)) { res.status(400).json({ error: "Invalid yearMonth or cursor" }); return; }
+  const rows = await db.select().from(syncChangesTable).where(and(eq(syncChangesTable.messId, access.messId), gt(syncChangesTable.id, cursor), eq(syncChangesTable.entityType, "daily_meal"), sql`${syncChangesTable.payload}->>'yearMonth' = ${yearMonth}`)).orderBy(syncChangesTable.id).limit(500);
+  res.json({ changes: rows.map(row => ({ cursor: String(row.id), payload: row.payload })), cursor: rows.length ? String(rows[rows.length - 1]!.id) : String(cursor) });
 };
 
 // PUT /api/mess/expenses  — body: { messId, yearMonth, day, items }
