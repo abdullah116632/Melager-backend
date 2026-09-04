@@ -12,10 +12,12 @@ import {
 } from "../controllers/noticeController.js";
 import { registerPushToken } from "../controllers/pushTokenController.js";
 import { requireAuth } from "../middleware/auth.js";
+import { syncNoticeMutation } from "../controllers/noticeSyncController.js";
 
 const router = Router();
 
 router.get("/mess/notices", requireAuth, getNotices);
+router.post("/mess/notices/sync", requireAuth, syncNoticeMutation);
 router.get("/mess/notices/unread-count", requireAuth, getUnreadNoticesCount);
 router.post("/mess/notices", requireAuth, createNotice);
 router.post("/mess/notices/read", requireAuth, markNoticesRead);
