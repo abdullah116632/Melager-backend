@@ -1,5 +1,5 @@
 import type { Response } from "express";
-import { and, asc, desc, eq, inArray, isNull, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, ne, sql } from "drizzle-orm";
 import {
   consumersTable,
   db,
@@ -25,16 +25,24 @@ const NOTICE_COLORS = new Set([
 ]);
 
 const readNoticeFields = (body: unknown) => {
-  const input = body as { title?: unknown; body?: unknown; color?: unknown } | null;
+  const input = body as {
+    title?: unknown;
+    body?: unknown;
+    color?: unknown;
+  } | null;
   const title = String(input?.title ?? "").trim();
   const noticeBody = String(input?.body ?? "").trim();
   const color = String(input?.color ?? DEFAULT_NOTICE_COLOR).toUpperCase();
 
   if (!title || title.length > MAX_TITLE_LENGTH) {
-    return { error: `title is required and must be at most ${MAX_TITLE_LENGTH} characters` };
+    return {
+      error: `title is required and must be at most ${MAX_TITLE_LENGTH} characters`,
+    };
   }
   if (!noticeBody || noticeBody.length > MAX_BODY_LENGTH) {
-    return { error: `body is required and must be at most ${MAX_BODY_LENGTH} characters` };
+    return {
+      error: `body is required and must be at most ${MAX_BODY_LENGTH} characters`,
+    };
   }
   if (!NOTICE_COLORS.has(color)) {
     return { error: "color must be one of the available notice colors" };
@@ -121,7 +129,10 @@ export const createNotice = async (req: AuthedRequest, res: Response) => {
         ),
       );
     const notificationRows = recipients
-      .filter((recipient): recipient is { userId: number } => recipient.userId != null)
+      .filter(
+        (recipient): recipient is { userId: number } =>
+          recipient.userId != null,
+      )
       .map((recipient) => ({
         messId: access.messId,
         userId: recipient.userId,
@@ -132,7 +143,10 @@ export const createNotice = async (req: AuthedRequest, res: Response) => {
       }));
     const notifications =
       notificationRows.length > 0
-        ? await tx.insert(notificationsTable).values(notificationRows).returning()
+        ? await tx
+            .insert(notificationsTable)
+            .values(notificationRows)
+            .returning()
         : [];
 
     return { notice: created!, notifications };
@@ -167,7 +181,12 @@ export const updateNotice = async (req: AuthedRequest, res: Response) => {
       color: input.color,
       updatedAt: new Date(),
     })
-    .where(and(eq(noticesTable.id, noticeId), eq(noticesTable.messId, access.messId)))
+    .where(
+      and(
+        eq(noticesTable.id, noticeId),
+        eq(noticesTable.messId, access.messId),
+      ),
+    )
     .returning();
   if (!notice) {
     res.status(404).json({ error: "Notice not found" });
@@ -191,7 +210,12 @@ export const deleteNotice = async (req: AuthedRequest, res: Response) => {
 
   const [notice] = await db
     .delete(noticesTable)
-    .where(and(eq(noticesTable.id, noticeId), eq(noticesTable.messId, access.messId)))
+    .where(
+      and(
+        eq(noticesTable.id, noticeId),
+        eq(noticesTable.messId, access.messId),
+      ),
+    )
     .returning({ id: noticesTable.id });
   if (!notice) {
     res.status(404).json({ error: "Notice not found" });
@@ -216,7 +240,9 @@ export const reorderNotices = async (req: AuthedRequest, res: Response) => {
     noticeIds.some((id: unknown) => !parsePositiveInteger(id)) ||
     new Set(noticeIds).size !== noticeIds.length
   ) {
-    res.status(400).json({ error: "noticeIds must be a unique non-empty array" });
+    res
+      .status(400)
+      .json({ error: "noticeIds must be a unique non-empty array" });
     return;
   }
 
@@ -226,7 +252,10 @@ export const reorderNotices = async (req: AuthedRequest, res: Response) => {
     .where(
       and(
         eq(noticesTable.messId, access.messId),
-        inArray(noticesTable.id, noticeIds.map((id: number) => parsePositiveInteger(id)!)),
+        inArray(
+          noticesTable.id,
+          noticeIds.map((id: number) => parsePositiveInteger(id)!),
+        ),
       ),
     );
   if (notices.length !== noticeIds.length) {
@@ -275,13 +304,17 @@ export const getNotifications = async (req: AuthedRequest, res: Response) => {
       and(
         eq(notificationsTable.userId, req.auth!.userId),
         eq(notificationsTable.messId, access.messId),
+        ne(notificationsTable.type, "message"),
       ),
     )
     .orderBy(desc(notificationsTable.createdAt));
   res.json({ notifications });
 };
 
-export const markNotificationRead = async (req: AuthedRequest, res: Response) => {
+export const markNotificationRead = async (
+  req: AuthedRequest,
+  res: Response,
+) => {
   const notificationId = parsePositiveInteger(req.params.id);
   if (!notificationId) {
     res.status(400).json({ error: "notification id is required" });

@@ -36,3 +36,16 @@ ON "notifications" ("user_id", "created_at");
 
 CREATE INDEX IF NOT EXISTS "notifications_mess_created_idx"
 ON "notifications" ("mess_id", "created_at");
+
+CREATE TABLE IF NOT EXISTS "notice_read_states" (
+  "id" serial PRIMARY KEY,
+  "mess_id" integer NOT NULL REFERENCES "messes"("id") ON DELETE CASCADE,
+  "user_id" integer NOT NULL REFERENCES "users"("id") ON DELETE CASCADE,
+  "last_read_notice_id" integer,
+  "updated_at" timestamp NOT NULL DEFAULT now(),
+  "created_at" timestamp NOT NULL DEFAULT now(),
+  CONSTRAINT "notice_read_states_mess_user_uq" UNIQUE ("mess_id", "user_id")
+);
+
+CREATE INDEX IF NOT EXISTS "notice_read_states_user_idx"
+ON "notice_read_states" ("user_id");

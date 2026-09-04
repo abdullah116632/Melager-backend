@@ -234,6 +234,28 @@ export const notificationsTable = pgTable(
   ],
 );
 
+// Notice read state is kept separately from the general notifications table.
+// A numeric watermark stays valid even if an old notice is deleted later.
+export const noticeReadStatesTable = pgTable(
+  "notice_read_states",
+  {
+    id: serial("id").primaryKey(),
+    messId: integer("mess_id")
+      .notNull()
+      .references(() => messesTable.id, { onDelete: "cascade" }),
+    userId: integer("user_id")
+      .notNull()
+      .references(() => usersTable.id, { onDelete: "cascade" }),
+    lastReadNoticeId: integer("last_read_notice_id"),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (t) => [
+    unique("notice_read_states_mess_user_uq").on(t.messId, t.userId),
+    index("notice_read_states_user_idx").on(t.userId),
+  ],
+);
+
 // A user may sign in on several phones. Tokens belong to a device and are
 // replaced when that device signs in with a different account.
 export const pushTokensTable = pgTable(
@@ -268,6 +290,28 @@ export const messagesTable = pgTable(
   (t) => [
     index("messages_mess_created_id_idx").on(t.messId, t.createdAt, t.id),
     index("messages_sender_created_idx").on(t.senderUserId, t.createdAt),
+  ],
+);
+
+export const messageReadStatesTable = pgTable(
+  "message_read_states",
+  {
+    id: serial("id").primaryKey(),
+    messId: integer("mess_id")
+      .notNull()
+      .references(() => messesTable.id, { onDelete: "cascade" }),
+    userId: integer("user_id")
+      .notNull()
+      .references(() => usersTable.id, { onDelete: "cascade" }),
+    // Keep this as a numeric watermark. Deleting one historical message must
+    // not reset a member's whole conversation to unread.
+    lastReadMessageId: integer("last_read_message_id"),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (t) => [
+    unique("message_read_states_mess_user_uq").on(t.messId, t.userId),
+    index("message_read_states_user_idx").on(t.userId),
   ],
 );
 
