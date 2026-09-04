@@ -266,3 +266,30 @@ export const deliverBazarAssignmentPushes = async ({
     })),
   );
 };
+
+/** Sends Consumer Breakdown pushes without adding entries to the bell. */
+export const deliverConsumerBreakdownPushes = async ({
+  recipientUserIds,
+  messId,
+}: {
+  recipientUserIds: number[];
+  messId: number;
+}): Promise<void> => {
+  recipientUserIds.forEach((userId) => {
+    emitToUser(userId, "consumer-breakdown:created", { messId });
+  });
+
+  await deliverPushes(
+    recipientUserIds.map((userId) => ({
+      userId,
+      title: "Consumer Breakdown updated",
+      body: "Open Consumer Breakdown to check the latest summary.",
+      channelId: "default",
+      data: {
+        messId,
+        type: "consumer_breakdown",
+        route: "/consumer-breakdown",
+      },
+    })),
+  );
+};

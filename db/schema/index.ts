@@ -391,6 +391,33 @@ export const bazarAssignmentNotificationsTable = pgTable(
   ],
 );
 
+// Consumer Breakdown alerts have their own badge and never appear in the
+// shared notification bell.
+export const consumerBreakdownNotificationsTable = pgTable(
+  "consumer_breakdown_notifications",
+  {
+    id: serial("id").primaryKey(),
+    messId: integer("mess_id")
+      .notNull()
+      .references(() => messesTable.id, { onDelete: "cascade" }),
+    userId: integer("user_id")
+      .notNull()
+      .references(() => usersTable.id, { onDelete: "cascade" }),
+    readAt: timestamp("read_at"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (t) => [
+    index("consumer_breakdown_notifications_user_idx").on(
+      t.userId,
+      t.createdAt,
+    ),
+    index("consumer_breakdown_notifications_mess_user_idx").on(
+      t.messId,
+      t.userId,
+    ),
+  ],
+);
+
 // One complete snapshot per mess/date: all three availability flags, windows,
 // and menus live in the same row for compact storage and a single-row read.
 export const mealControlTable = pgTable(

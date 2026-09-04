@@ -9,6 +9,7 @@ import depositEntriesRouter from "./depositEntriesRoute.js";
 import noticeRouter from "./noticeRoute.js";
 import bazarRouter from "./bazarRoute.js";
 import messageRouter from "./messageRoute.js";
+import consumerBreakdownNotificationRouter from "./consumerBreakdownNotificationRoute.js";
 
 const router: IRouter = Router();
 
@@ -22,5 +23,6 @@ router.use(depositEntriesRouter);
 router.use(noticeRouter);
 router.use(bazarRouter);
 router.use(messageRouter);
+router.use(consumerBreakdownNotificationRouter);
 
 export default router;
