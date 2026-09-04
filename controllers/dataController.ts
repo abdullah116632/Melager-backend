@@ -22,6 +22,7 @@ import {
   getBufferedMonthBounds,
 } from "../utils/dateUtils.js";
 import { resolveMessAccess } from "../utils/messAccessUtils.js";
+import { emitToMess } from "../realtime/socket.js";
 
 const parseDecimal = (
   value: unknown,
@@ -179,6 +180,10 @@ export const setMeal = async (req: AuthedRequest, res: Response) => {
       ],
       set: { count: mealCount },
     });
+  emitToMess(mess.id, "meals:updated", {
+    messId: mess.id,
+    yearMonth,
+  });
   res.json({ success: true });
 };
 
@@ -243,6 +248,10 @@ export const setExpense = async (req: AuthedRequest, res: Response) => {
         }>,
       },
     });
+  emitToMess(mess.id, "expenses:updated", {
+    messId: mess.id,
+    yearMonth,
+  });
   res.json({ success: true });
 };
 
@@ -297,6 +306,10 @@ export const setDeposit = async (req: AuthedRequest, res: Response) => {
       ],
       set: { amount: depositAmount },
     });
+  emitToMess(mess.id, "deposits:updated", {
+    messId: mess.id,
+    yearMonth,
+  });
   res.json({ success: true });
 };
 

@@ -14,6 +14,7 @@ import type { AuthedRequest } from "../middleware/auth.js";
 import { resolveMessAccess } from "../utils/messAccessUtils.js";
 import { parsePositiveInteger } from "../utils/numberUtils.js";
 import { deliverBazarAssignmentPushes } from "../lib/notificationDelivery.js";
+import { emitToMess } from "../realtime/socket.js";
 
 const MAX_ITEM_NAME_LENGTH = 160;
 const WEEKDAYS = new Set([0, 1, 2, 3, 4, 5, 6]);
@@ -315,6 +316,13 @@ export const addBazarItemsToExpense = async (
     }
     return { newItems, alreadyAddedAll: newItems.length === 0 };
   });
+
+  if (!preview && result.newItems.length > 0) {
+    emitToMess(access.messId, "expenses:updated", {
+      messId: access.messId,
+      yearMonth: String(yearMonth),
+    });
+  }
 
   res.json({ ...result, added: !preview && result.newItems.length > 0 });
 };

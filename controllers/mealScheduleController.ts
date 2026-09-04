@@ -24,6 +24,7 @@ import {
 } from "../utils/mealScheduleUtils.js";
 import { resolveMessAccess } from "../utils/messAccessUtils.js";
 import { parsePositiveInteger } from "../utils/numberUtils.js";
+import { emitToMess } from "../realtime/socket.js";
 
 type MealOptOutScope = "day" | "ongoing";
 
@@ -480,6 +481,10 @@ export const setMealSchedule = async (req: AuthedRequest, res: Response) => {
   }
 
   void deliverNotifications(notifications);
+  emitToMess(messId, "meal-schedule:updated", {
+    messId,
+    date: targetDate,
+  });
   res.json({ success: true });
 };
 
@@ -638,7 +643,9 @@ const notifyManagersOfMealStatusChange = async ({
 }) => {
   const [actor, managers] = await Promise.all([
     db
-      .select({ name: sql<string>`coalesce(${usersTable.name}, ${consumersTable.name})` })
+      .select({
+        name: sql<string>`coalesce(${usersTable.name}, ${consumersTable.name})`,
+      })
       .from(consumersTable)
       .leftJoin(usersTable, eq(consumersTable.userId, usersTable.id))
       .where(
@@ -660,7 +667,13 @@ const notifyManagersOfMealStatusChange = async ({
         ),
       ),
   ]);
-  const managerUserIds = [...new Set(managers.flatMap(({ userId }) => userId == null || userId === actorUserId ? [] : [userId]))];
+  const managerUserIds = [
+    ...new Set(
+      managers.flatMap(({ userId }) =>
+        userId == null || userId === actorUserId ? [] : [userId],
+      ),
+    ),
+  ];
   if (managerUserIds.length === 0) return;
 
   const mealLabel = mealType.charAt(0).toUpperCase() + mealType.slice(1);

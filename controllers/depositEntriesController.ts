@@ -5,6 +5,10 @@ import type { AuthedRequest } from "../middleware/auth.js";
 import { toDepositEntryResponse } from "../utils/depositEntryUtils.js";
 import { resolveMessAccess } from "../utils/messAccessUtils.js";
 import { parsePositiveInteger } from "../utils/numberUtils.js";
+import { emitToMess } from "../realtime/socket.js";
+
+const getYearMonth = (date: Date): string =>
+  `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
 
 // POST /api/mess/deposit-entry — admin adds a deposit for a consumer
 export const addDepositEntry = async (req: AuthedRequest, res: Response) => {
@@ -41,9 +45,9 @@ export const addDepositEntry = async (req: AuthedRequest, res: Response) => {
     amount === 0 ||
     !/^[-+]?\d+(?:\.\d{1,3})?$/.test(String(amountRaw).trim())
   ) {
-    res
-      .status(400)
-      .json({ error: "amount must be a non-zero number with up to 3 decimal places" });
+    res.status(400).json({
+      error: "amount must be a non-zero number with up to 3 decimal places",
+    });
     return;
   }
 
@@ -69,6 +73,12 @@ export const addDepositEntry = async (req: AuthedRequest, res: Response) => {
     .insert(depositEntriesTable)
     .values({ messId, consumerId, amount, depositedAt, note: note ?? null })
     .returning();
+
+  emitToMess(messId, "deposits:updated", {
+    messId,
+    yearMonths: [getYearMonth(depositedAt)],
+    refreshEntries: true,
+  });
 
   res.status(201).json({ entry: toDepositEntryResponse(entry) });
 };
@@ -116,8 +126,12 @@ export const getDepositEntries = async (req: AuthedRequest, res: Response) => {
 export const updateDepositEntry = async (req: AuthedRequest, res: Response) => {
   const userId = req.auth!.userId;
   const entryId = parsePositiveInteger(req.params.id);
-  const { messId: messIdRaw, amount: amountRaw, depositedAt: depositedAtRaw, note } =
-    req.body ?? {};
+  const {
+    messId: messIdRaw,
+    amount: amountRaw,
+    depositedAt: depositedAtRaw,
+    note,
+  } = req.body ?? {};
   const messId = parsePositiveInteger(messIdRaw);
   if (!entryId || !messId) {
     res.status(400).json({ error: "entry id and messId are required" });
@@ -136,14 +150,29 @@ export const updateDepositEntry = async (req: AuthedRequest, res: Response) => {
     amount === 0 ||
     !/^[-+]?\d+(?:\.\d{1,3})?$/.test(String(amountRaw).trim())
   ) {
-    res
-      .status(400)
-      .json({ error: "amount must be a non-zero number with up to 3 decimal places" });
+    res.status(400).json({
+      error: "amount must be a non-zero number with up to 3 decimal places",
+    });
     return;
   }
   const depositedAt = depositedAtRaw ? new Date(depositedAtRaw) : null;
   if (!depositedAt || Number.isNaN(depositedAt.getTime())) {
     res.status(400).json({ error: "Invalid depositedAt date" });
+    return;
+  }
+
+  const [previousEntry] = await db
+    .select({ depositedAt: depositEntriesTable.depositedAt })
+    .from(depositEntriesTable)
+    .where(
+      and(
+        eq(depositEntriesTable.id, entryId),
+        eq(depositEntriesTable.messId, messId),
+      ),
+    )
+    .limit(1);
+  if (!previousEntry) {
+    res.status(404).json({ error: "Entry not found" });
     return;
   }
 
@@ -161,6 +190,17 @@ export const updateDepositEntry = async (req: AuthedRequest, res: Response) => {
     res.status(404).json({ error: "Entry not found" });
     return;
   }
+
+  emitToMess(messId, "deposits:updated", {
+    messId,
+    yearMonths: [
+      ...new Set([
+        getYearMonth(previousEntry.depositedAt),
+        getYearMonth(depositedAt),
+      ]),
+    ],
+    refreshEntries: true,
+  });
 
   res.json({ entry: toDepositEntryResponse(entry) });
 };
@@ -187,7 +227,10 @@ export const deleteDepositEntry = async (req: AuthedRequest, res: Response) => {
   }
 
   const [entry] = await db
-    .select({ id: depositEntriesTable.id })
+    .select({
+      id: depositEntriesTable.id,
+      depositedAt: depositEntriesTable.depositedAt,
+    })
     .from(depositEntriesTable)
     .where(
       and(
@@ -204,5 +247,10 @@ export const deleteDepositEntry = async (req: AuthedRequest, res: Response) => {
   await db
     .delete(depositEntriesTable)
     .where(eq(depositEntriesTable.id, entryId));
+  emitToMess(messId, "deposits:updated", {
+    messId,
+    yearMonths: [getYearMonth(entry.depositedAt)],
+    refreshEntries: true,
+  });
   res.json({ success: true });
 };
