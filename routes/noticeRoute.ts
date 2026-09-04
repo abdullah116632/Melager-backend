@@ -3,7 +3,9 @@ import {
   createNotice,
   deleteNotice,
   getNotices,
+  getUnreadNoticesCount,
   getNotifications,
+  markNoticesRead,
   markNotificationRead,
   reorderNotices,
   updateNotice,
@@ -14,7 +16,9 @@ import { requireAuth } from "../middleware/auth.js";
 const router = Router();
 
 router.get("/mess/notices", requireAuth, getNotices);
+router.get("/mess/notices/unread-count", requireAuth, getUnreadNoticesCount);
 router.post("/mess/notices", requireAuth, createNotice);
+router.post("/mess/notices/read", requireAuth, markNoticesRead);
 router.patch("/mess/notices/reorder", requireAuth, reorderNotices);
 router.patch("/mess/notices/:id", requireAuth, updateNotice);
 router.delete("/mess/notices/:id", requireAuth, deleteNotice);

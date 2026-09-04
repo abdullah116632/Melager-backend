@@ -1,15 +1,28 @@
 import type { Response } from "express";
-import { and, asc, desc, eq, inArray, isNull, ne, sql } from "drizzle-orm";
+import {
+  and,
+  asc,
+  count,
+  desc,
+  eq,
+  gt,
+  inArray,
+  isNull,
+  max,
+  ne,
+  sql,
+} from "drizzle-orm";
 import {
   consumersTable,
   db,
+  noticeReadStatesTable,
   noticesTable,
   notificationsTable,
 } from "../db/dbConfig.js";
 import type { AuthedRequest } from "../middleware/auth.js";
 import { resolveMessAccess } from "../utils/messAccessUtils.js";
 import { parsePositiveInteger } from "../utils/numberUtils.js";
-import { deliverNotifications } from "../lib/notificationDelivery.js";
+import { deliverNoticePushes } from "../lib/notificationDelivery.js";
 
 const MAX_TITLE_LENGTH = 160;
 const MAX_BODY_LENGTH = 5000;
@@ -128,32 +141,116 @@ export const createNotice = async (req: AuthedRequest, res: Response) => {
           isNull(consumersTable.accountDeletedAt),
         ),
       );
-    const notificationRows = recipients
-      .filter(
-        (recipient): recipient is { userId: number } =>
-          recipient.userId != null,
-      )
-      .map((recipient) => ({
-        messId: access.messId,
-        userId: recipient.userId,
-        noticeId: created!.id,
-        type: "notice",
-        title: input.title,
-        body: input.body,
-      }));
-    const notifications =
-      notificationRows.length > 0
-        ? await tx
-            .insert(notificationsTable)
-            .values(notificationRows)
-            .returning()
-        : [];
+    const pushRecipientUserIds = [
+      ...new Set(
+        recipients.flatMap((recipient) =>
+          recipient.userId == null ? [] : [recipient.userId],
+        ),
+      ),
+    ];
 
-    return { notice: created!, notifications };
+    return { notice: created!, pushRecipientUserIds };
   });
 
-  void deliverNotifications(result.notifications);
+  void deliverNoticePushes({
+    recipientUserIds: result.pushRecipientUserIds,
+    messId: access.messId,
+    noticeId: result.notice.id,
+    title: result.notice.title,
+    body: result.notice.body,
+  });
   res.status(201).json({ notice: result.notice });
+};
+
+const getUnreadNoticeCount = async (messId: number, userId: number) => {
+  const [readState] = await db
+    .select({ lastReadNoticeId: noticeReadStatesTable.lastReadNoticeId })
+    .from(noticeReadStatesTable)
+    .where(
+      and(
+        eq(noticeReadStatesTable.messId, messId),
+        eq(noticeReadStatesTable.userId, userId),
+      ),
+    )
+    .limit(1);
+  const [membership] = readState
+    ? []
+    : await db
+        .select({ joinedAt: consumersTable.createdAt })
+        .from(consumersTable)
+        .where(
+          and(
+            eq(consumersTable.messId, messId),
+            eq(consumersTable.userId, userId),
+            isNull(consumersTable.accountDeletedAt),
+          ),
+        )
+        .orderBy(asc(consumersTable.createdAt))
+        .limit(1);
+  const unreadBoundary = readState
+    ? gt(noticesTable.id, readState.lastReadNoticeId ?? 0)
+    : membership
+      ? gt(noticesTable.createdAt, membership.joinedAt)
+      : gt(noticesTable.id, 0);
+  const [result] = await db
+    .select({ total: count() })
+    .from(noticesTable)
+    .where(
+      and(
+        eq(noticesTable.messId, messId),
+        unreadBoundary,
+        ne(noticesTable.createdByUserId, userId),
+      ),
+    );
+  return Number(result?.total ?? 0);
+};
+
+export const getUnreadNoticesCount = async (
+  req: AuthedRequest,
+  res: Response,
+) => {
+  const access = await resolveMessAccess(req.auth!.userId, req.query.messId);
+  if (!access.ok) {
+    res.status(access.status).json({ error: access.error });
+    return;
+  }
+
+  const unreadCount = await getUnreadNoticeCount(
+    access.messId,
+    req.auth!.userId,
+  );
+  res.json({ unreadCount });
+};
+
+export const markNoticesRead = async (req: AuthedRequest, res: Response) => {
+  const access = await resolveMessAccess(req.auth!.userId, req.body?.messId);
+  if (!access.ok) {
+    res.status(access.status).json({ error: access.error });
+    return;
+  }
+
+  const [latest] = await db
+    .select({ id: max(noticesTable.id) })
+    .from(noticesTable)
+    .where(eq(noticesTable.messId, access.messId));
+  const latestNoticeId = latest?.id == null ? null : Number(latest.id);
+  await db
+    .insert(noticeReadStatesTable)
+    .values({
+      messId: access.messId,
+      userId: req.auth!.userId,
+      lastReadNoticeId: latestNoticeId,
+      updatedAt: new Date(),
+    })
+    .onConflictDoUpdate({
+      target: [noticeReadStatesTable.messId, noticeReadStatesTable.userId],
+      set: {
+        lastReadNoticeId: latestNoticeId,
+        updatedAt: new Date(),
+      },
+    });
+
+  res.json({ unreadCount: 0 });
 };
 
 export const updateNotice = async (req: AuthedRequest, res: Response) => {
@@ -305,6 +402,7 @@ export const getNotifications = async (req: AuthedRequest, res: Response) => {
         eq(notificationsTable.userId, req.auth!.userId),
         eq(notificationsTable.messId, access.messId),
         ne(notificationsTable.type, "message"),
+        ne(notificationsTable.type, "notice"),
       ),
     )
     .orderBy(desc(notificationsTable.createdAt));

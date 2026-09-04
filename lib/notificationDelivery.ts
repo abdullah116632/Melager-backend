@@ -138,7 +138,7 @@ export const deliverNotifications = async (
         and(
           inArray(notificationsTable.userId, userIds),
           isNull(notificationsTable.readAt),
-          sql`${notificationsTable.type} <> 'message'`,
+          sql`${notificationsTable.type} NOT IN ('message', 'notice')`,
         ),
       )
       .groupBy(notificationsTable.userId);
@@ -192,6 +192,35 @@ export const deliverMessagePushes = async ({
         messId,
         type: "message",
         route: "/messages",
+      },
+    })),
+  );
+
+/** Sends notice pushes without creating rows in the general notifications table. */
+export const deliverNoticePushes = async ({
+  recipientUserIds,
+  messId,
+  noticeId,
+  title,
+  body,
+}: {
+  recipientUserIds: number[];
+  messId: number;
+  noticeId: number;
+  title: string;
+  body: string;
+}): Promise<void> =>
+  deliverPushes(
+    recipientUserIds.map((userId) => ({
+      userId,
+      title: `New notice: ${title}`,
+      body: body.length > 140 ? `${body.slice(0, 137)}...` : body,
+      channelId: "notices",
+      data: {
+        noticeId,
+        messId,
+        type: "notice",
+        route: "/notice-board",
       },
     })),
   );
