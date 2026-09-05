@@ -10,6 +10,7 @@ import {
 } from "../db/dbConfig.js";
 import type { AuthedRequest } from "../middleware/auth.js";
 import { resolveMessAccess } from "../utils/messAccessUtils.js";
+import { emitToMess } from "../realtime/socket.js";
 
 export const syncDailyMeal = async (req: AuthedRequest, res: Response) => {
   const userId = req.auth!.userId;
@@ -132,6 +133,10 @@ export const syncDailyMeal = async (req: AuthedRequest, res: Response) => {
         })
         .where(eq(syncClientMutationsTable.id, receipt.id));
       return body;
+    });
+    emitToMess(access.messId, "meals:updated", {
+      messId: access.messId,
+      yearMonth,
     });
     res.json(result);
   } catch (error) {
