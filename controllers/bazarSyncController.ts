@@ -1,6 +1,6 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { Response } from "express";
-import { and, eq, inArray, isNull } from "drizzle-orm";
+import { and, eq, inArray, isNull, sql } from "drizzle-orm";
 
 import {
   bazarAssignmentNotificationsTable,
@@ -8,6 +8,7 @@ import {
   bazarItemsTable,
   consumersTable,
   db,
+  expenseDaysTable,
   syncChangesTable,
   syncClientMutationsTable,
   usersTable,
@@ -16,6 +17,7 @@ import { deliverBazarAssignmentPushes } from "../lib/notificationDelivery.js";
 import type { AuthedRequest } from "../middleware/auth.js";
 import { resolveMessAccess } from "../utils/messAccessUtils.js";
 import { parsePositiveInteger } from "../utils/numberUtils.js";
+import { emitToMess } from "../realtime/socket.js";
 
 type BazarSyncOperation =
   | "item_create"
@@ -23,6 +25,7 @@ type BazarSyncOperation =
   | "item_status"
   | "item_delete"
   | "assignments_set"
+  | "add_to_expense"
   | "notifications_read"
   | "notify_members";
 
@@ -41,6 +44,7 @@ const operations = new Set<BazarSyncOperation>([
   "item_status",
   "item_delete",
   "assignments_set",
+  "add_to_expense",
   "notifications_read",
   "notify_members",
 ]);
@@ -49,11 +53,20 @@ const adminOperations = new Set<BazarSyncOperation>([
   "item_update",
   "item_delete",
   "assignments_set",
+  "add_to_expense",
   "notify_members",
 ]);
 
 const toJsonValue = (value: unknown) =>
   JSON.parse(JSON.stringify(value)) as Record<string, unknown>;
+
+const readBaseUpdatedAt = (payload: Record<string, unknown>): Date => {
+  const value = new Date(String(payload.baseUpdatedAt ?? ""));
+  if (Number.isNaN(value.getTime())) {
+    throw new SyncRequestError("A valid baseUpdatedAt is required");
+  }
+  return value;
+};
 
 export const syncBazarMutation = async (req: AuthedRequest, res: Response) => {
   const userId = req.auth!.userId;
@@ -182,23 +195,56 @@ export const syncBazarMutation = async (req: AuthedRequest, res: Response) => {
         ) {
           throw new SyncRequestError("Invalid bazar item update");
         }
+        const baseUpdatedAt = readBaseUpdatedAt(payload);
+        if (
+          payload.completed !== undefined &&
+          typeof payload.completed !== "boolean"
+        ) {
+          throw new SyncRequestError("Invalid bazar completion value");
+        }
         const [item] = await tx
           .update(bazarItemsTable)
-          .set({ name, price, updatedAt: new Date() })
+          .set({
+            name,
+            price,
+            ...(typeof payload.completed === "boolean"
+              ? { isCompleted: payload.completed }
+              : {}),
+            updatedAt: new Date(),
+          })
           .where(
             and(
               eq(bazarItemsTable.id, serverId),
               eq(bazarItemsTable.messId, access.messId),
+              sql`date_trunc('milliseconds', ${bazarItemsTable.updatedAt}) = ${baseUpdatedAt}`,
             ),
           )
           .returning();
-        if (!item) throw new SyncRequestError("Bazar item not found", 404);
+        if (!item) {
+          const [current] = await tx
+            .select({ id: bazarItemsTable.id })
+            .from(bazarItemsTable)
+            .where(
+              and(
+                eq(bazarItemsTable.id, serverId),
+                eq(bazarItemsTable.messId, access.messId),
+              ),
+            )
+            .limit(1);
+          throw new SyncRequestError(
+            current
+              ? "Bazar item changed on another device"
+              : "Bazar item not found",
+            current ? 409 : 404,
+          );
+        }
         body = { item };
       } else if (operation === "item_status") {
         const serverId = parsePositiveInteger(payload.serverId);
         if (!serverId || typeof payload.completed !== "boolean") {
           throw new SyncRequestError("Invalid bazar completion update");
         }
+        const baseUpdatedAt = readBaseUpdatedAt(payload);
         const [item] = await tx
           .update(bazarItemsTable)
           .set({ isCompleted: payload.completed, updatedAt: new Date() })
@@ -206,22 +252,61 @@ export const syncBazarMutation = async (req: AuthedRequest, res: Response) => {
             and(
               eq(bazarItemsTable.id, serverId),
               eq(bazarItemsTable.messId, access.messId),
+              sql`date_trunc('milliseconds', ${bazarItemsTable.updatedAt}) = ${baseUpdatedAt}`,
             ),
           )
           .returning();
-        if (!item) throw new SyncRequestError("Bazar item not found", 404);
+        if (!item) {
+          const [current] = await tx
+            .select({ id: bazarItemsTable.id })
+            .from(bazarItemsTable)
+            .where(
+              and(
+                eq(bazarItemsTable.id, serverId),
+                eq(bazarItemsTable.messId, access.messId),
+              ),
+            )
+            .limit(1);
+          throw new SyncRequestError(
+            current
+              ? "Bazar item changed on another device"
+              : "Bazar item not found",
+            current ? 409 : 404,
+          );
+        }
         body = { item };
       } else if (operation === "item_delete") {
         const serverId = parsePositiveInteger(payload.serverId);
         if (!serverId) throw new SyncRequestError("Invalid bazar item id");
-        await tx
+        const baseUpdatedAt = readBaseUpdatedAt(payload);
+        const [deleted] = await tx
           .delete(bazarItemsTable)
           .where(
             and(
               eq(bazarItemsTable.id, serverId),
               eq(bazarItemsTable.messId, access.messId),
+              sql`date_trunc('milliseconds', ${bazarItemsTable.updatedAt}) = ${baseUpdatedAt}`,
             ),
+          )
+          .returning({ id: bazarItemsTable.id });
+        if (!deleted) {
+          const [current] = await tx
+            .select({ id: bazarItemsTable.id })
+            .from(bazarItemsTable)
+            .where(
+              and(
+                eq(bazarItemsTable.id, serverId),
+                eq(bazarItemsTable.messId, access.messId),
+              ),
+            )
+            .limit(1);
+          throw new SyncRequestError(
+            current
+              ? "Bazar item changed on another device"
+              : "Bazar item not found",
+            current ? 409 : 404,
           );
+        }
         body = { success: true, serverId };
         changeOperation = "delete";
       } else if (operation === "assignments_set") {
@@ -240,6 +325,43 @@ export const syncBazarMutation = async (req: AuthedRequest, res: Response) => {
         ];
         if (consumerIds.some((id) => !Number.isInteger(id) || id <= 0)) {
           throw new SyncRequestError("Invalid assignment member");
+        }
+        const baseConsumerIds = Array.isArray(payload.baseConsumerIds)
+          ? payload.baseConsumerIds.map(Number).sort((a, b) => a - b)
+          : null;
+        if (
+          !baseConsumerIds ||
+          baseConsumerIds.some((id) => !Number.isInteger(id) || id <= 0)
+        ) {
+          throw new SyncRequestError(
+            "A valid baseConsumerIds array is required",
+          );
+        }
+        await tx.execute(
+          sql`SELECT pg_advisory_xact_lock(${access.messId}, ${10_000 + weekday})`,
+        );
+        const currentAssignments = await tx
+          .select({ consumerId: bazarAssignmentsTable.consumerId })
+          .from(bazarAssignmentsTable)
+          .where(
+            and(
+              eq(bazarAssignmentsTable.messId, access.messId),
+              eq(bazarAssignmentsTable.weekday, weekday),
+            ),
+          );
+        const currentConsumerIds = currentAssignments
+          .map((item) => item.consumerId)
+          .sort((a, b) => a - b);
+        if (
+          currentConsumerIds.length !== baseConsumerIds.length ||
+          currentConsumerIds.some(
+            (consumerId, index) => consumerId !== baseConsumerIds[index],
+          )
+        ) {
+          throw new SyncRequestError(
+            "Bazar assignments changed on another device",
+            409,
+          );
         }
         const selectedConsumers =
           consumerIds.length === 0
@@ -299,6 +421,84 @@ export const syncBazarMutation = async (req: AuthedRequest, res: Response) => {
             ),
           );
         body = { assignments, weekday };
+        changeOperation = "upsert";
+      } else if (operation === "add_to_expense") {
+        const yearMonth = String(payload.yearMonth ?? "");
+        const day = Number(payload.day);
+        if (
+          !/^\d{4}-\d{2}$/.test(yearMonth) ||
+          !Number.isInteger(day) ||
+          day < 1 ||
+          day > 31
+        ) {
+          throw new SyncRequestError(
+            "Valid expense month and day are required",
+          );
+        }
+        await tx.execute(
+          sql`SELECT pg_advisory_xact_lock(${access.messId}, ${20_000 + day})`,
+        );
+        const [bazarItems, existingExpense] = await Promise.all([
+          tx
+            .select({
+              name: bazarItemsTable.name,
+              price: bazarItemsTable.price,
+            })
+            .from(bazarItemsTable)
+            .where(eq(bazarItemsTable.messId, access.messId)),
+          tx
+            .select({ items: expenseDaysTable.items })
+            .from(expenseDaysTable)
+            .where(
+              and(
+                eq(expenseDaysTable.messId, access.messId),
+                eq(expenseDaysTable.yearMonth, yearMonth),
+                eq(expenseDaysTable.day, day),
+              ),
+            )
+            .limit(1),
+        ]);
+        const existingItems = existingExpense[0]?.items ?? [];
+        const existingKeys = new Set(
+          existingItems.map((item) => `${item.name}\u0000${item.amount}`),
+        );
+        const newItems = bazarItems
+          .filter((item) => {
+            const key = `${item.name}\u0000${item.price}`;
+            if (existingKeys.has(key)) return false;
+            existingKeys.add(key);
+            return true;
+          })
+          .map((item) => ({
+            id: randomUUID(),
+            name: item.name,
+            amount: item.price,
+          }));
+        if (newItems.length > 0) {
+          const mergedItems = [...existingItems, ...newItems];
+          await tx
+            .insert(expenseDaysTable)
+            .values({
+              messId: access.messId,
+              yearMonth,
+              day,
+              items: mergedItems,
+            })
+            .onConflictDoUpdate({
+              target: [
+                expenseDaysTable.messId,
+                expenseDaysTable.yearMonth,
+                expenseDaysTable.day,
+              ],
+              set: { items: mergedItems },
+            });
+        }
+        body = {
+          newItems,
+          alreadyAddedAll: newItems.length === 0,
+          added: newItems.length > 0,
+          yearMonth,
+        };
         changeOperation = "upsert";
       } else if (operation === "notifications_read") {
         await tx
@@ -407,6 +607,16 @@ export const syncBazarMutation = async (req: AuthedRequest, res: Response) => {
         recipientUserIds: responseBody.recipientUserIds,
         messId: access.messId,
         weekday: responseBody.weekday,
+      });
+    }
+    if (
+      operation === "add_to_expense" &&
+      !outcome.replayed &&
+      responseBody.added === true
+    ) {
+      emitToMess(access.messId, "expenses:updated", {
+        messId: access.messId,
+        yearMonth: responseBody.yearMonth,
       });
     }
     if (operation === "notify_members") {

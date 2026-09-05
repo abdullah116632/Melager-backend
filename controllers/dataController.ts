@@ -1,5 +1,5 @@
 import type { Response } from "express";
-import { eq, and, gt, gte, lt, sql } from "drizzle-orm";
+import { asc, eq, and, gt, gte, lt, sql } from "drizzle-orm";
 import {
   db,
   consumersTable,
@@ -23,6 +23,7 @@ import {
   getBufferedMonthBounds,
 } from "../utils/dateUtils.js";
 import { resolveMessAccess } from "../utils/messAccessUtils.js";
+import { parsePositiveInteger } from "../utils/numberUtils.js";
 import { emitToMess } from "../realtime/socket.js";
 
 const parseDecimal = (
@@ -69,7 +70,8 @@ export const getMonthData = async (req: AuthedRequest, res: Response) => {
         })
         .from(consumersTable)
         .leftJoin(usersTable, eq(consumersTable.userId, usersTable.id))
-        .where(eq(consumersTable.messId, mess.id)),
+        .where(eq(consumersTable.messId, mess.id))
+        .orderBy(asc(consumersTable.createdAt), asc(consumersTable.id)),
       db
         .select()
         .from(mealsTable)
@@ -156,6 +158,25 @@ export const setMeal = async (req: AuthedRequest, res: Response) => {
       .json({ error: "consumerId, yearMonth, day, count are required" });
     return;
   }
+  const parsedConsumerId = parsePositiveInteger(consumerId);
+  if (!parsedConsumerId) {
+    res.status(400).json({ error: "consumerId must be a positive integer" });
+    return;
+  }
+  const [consumer] = await db
+    .select({ id: consumersTable.id })
+    .from(consumersTable)
+    .where(
+      and(
+        eq(consumersTable.id, parsedConsumerId),
+        eq(consumersTable.messId, mess.id),
+      ),
+    )
+    .limit(1);
+  if (!consumer) {
+    res.status(404).json({ error: "Consumer not found in this mess" });
+    return;
+  }
   const mealCount = parseDecimal(count);
   if (mealCount === null) {
     res.status(400).json({
@@ -167,7 +188,7 @@ export const setMeal = async (req: AuthedRequest, res: Response) => {
     .insert(mealsTable)
     .values({
       messId: mess.id,
-      consumerId: parseInt(consumerId, 10),
+      consumerId: parsedConsumerId,
       yearMonth,
       day: parseInt(day, 10),
       count: mealCount,
@@ -291,6 +312,25 @@ export const setDeposit = async (req: AuthedRequest, res: Response) => {
       .json({ error: "consumerId, yearMonth, day, amount are required" });
     return;
   }
+  const parsedConsumerId = parsePositiveInteger(consumerId);
+  if (!parsedConsumerId) {
+    res.status(400).json({ error: "consumerId must be a positive integer" });
+    return;
+  }
+  const [consumer] = await db
+    .select({ id: consumersTable.id })
+    .from(consumersTable)
+    .where(
+      and(
+        eq(consumersTable.id, parsedConsumerId),
+        eq(consumersTable.messId, mess.id),
+      ),
+    )
+    .limit(1);
+  if (!consumer) {
+    res.status(404).json({ error: "Consumer not found in this mess" });
+    return;
+  }
   const depositAmount = parseDecimal(amount, {
     allowNegative: true,
   });
@@ -304,7 +344,7 @@ export const setDeposit = async (req: AuthedRequest, res: Response) => {
     .insert(depositsTable)
     .values({
       messId: mess.id,
-      consumerId: parseInt(consumerId, 10),
+      consumerId: parsedConsumerId,
       yearMonth,
       day: parseInt(day, 10),
       amount: depositAmount,

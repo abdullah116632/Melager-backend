@@ -1,5 +1,5 @@
 import type { Response } from "express";
-import { eq, and, sql } from "drizzle-orm";
+import { asc, eq, and, sql } from "drizzle-orm";
 import {
   db,
   messesTable,
@@ -22,7 +22,6 @@ import {
 import { getMessContext } from "../lib/mess-access.js";
 import { normalizeEmail } from "../utils/authUtils.js";
 import {
-  getPendingMemberRequest,
   toPendingRequestResponse,
   updateMemberRequestStatus,
 } from "../utils/memberRequestUtils.js";
@@ -124,9 +123,9 @@ export const joinMess = async (req: AuthedRequest, res: Response) => {
 
   if (existingRequest) {
     if (existingRequest.status === "pending") {
-      res
-        .status(409)
-        .json({ error: "You already have a pending request for this mess" });
+      res.json({
+        pendingRequest: toPendingRequestResponse(existingRequest.id, mess),
+      });
       return;
     }
     // An accepted request can remain as history after a manager removes the
@@ -211,9 +210,13 @@ export const acceptMemberRequest = async (
 ) => {
   const userId = req.auth!.userId;
   const requestId = parsePositiveInteger(req.params.id);
-  const memberRequest = requestId
-    ? await getPendingMemberRequest(requestId)
-    : null;
+  const [memberRequest] = requestId
+    ? await db
+        .select()
+        .from(memberRequestsTable)
+        .where(eq(memberRequestsTable.id, requestId))
+        .limit(1)
+    : [];
   if (!memberRequest) {
     res.status(404).json({ error: "Request not found" });
     return;
@@ -227,6 +230,27 @@ export const acceptMemberRequest = async (
     return;
   }
   const { mess } = access;
+
+  if (memberRequest.status === "accepted") {
+    const [consumer] = await db
+      .select({ id: consumersTable.id, name: consumersTable.name })
+      .from(consumersTable)
+      .where(
+        and(
+          eq(consumersTable.messId, mess.id),
+          eq(consumersTable.userId, memberRequest.userId),
+        ),
+      )
+      .limit(1);
+    if (consumer) {
+      res.json({ consumer });
+      return;
+    }
+  }
+  if (memberRequest.status !== "pending") {
+    res.status(409).json({ error: "Request is no longer pending" });
+    return;
+  }
 
   await updateMemberRequestStatus(memberRequest.id, "accepted");
 
@@ -283,9 +307,13 @@ export const rejectMemberRequest = async (
 ) => {
   const userId = req.auth!.userId;
   const requestId = parsePositiveInteger(req.params.id);
-  const memberRequest = requestId
-    ? await getPendingMemberRequest(requestId)
-    : null;
+  const [memberRequest] = requestId
+    ? await db
+        .select()
+        .from(memberRequestsTable)
+        .where(eq(memberRequestsTable.id, requestId))
+        .limit(1)
+    : [];
   if (!memberRequest) {
     res.status(404).json({ error: "Request not found" });
     return;
@@ -296,6 +324,15 @@ export const rejectMemberRequest = async (
   });
   if (!access.ok) {
     res.status(access.status).json({ error: access.error });
+    return;
+  }
+
+  if (memberRequest.status === "rejected") {
+    res.json({ success: true });
+    return;
+  }
+  if (memberRequest.status !== "pending") {
+    res.status(409).json({ error: "Request is no longer pending" });
     return;
   }
 
@@ -346,7 +383,8 @@ export const getConsumers = async (req: AuthedRequest, res: Response) => {
     })
     .from(consumersTable)
     .leftJoin(usersTable, eq(consumersTable.userId, usersTable.id))
-    .where(eq(consumersTable.messId, mess.id));
+    .where(eq(consumersTable.messId, mess.id))
+    .orderBy(asc(consumersTable.createdAt), asc(consumersTable.id));
   res.json({ consumers });
 };
 
@@ -667,12 +705,11 @@ export const rejoinMess = async (req: AuthedRequest, res: Response) => {
       and(
         eq(memberRequestsTable.id, parsedRequestId),
         eq(memberRequestsTable.userId, userId),
-        eq(memberRequestsTable.status, "rejected"),
       ),
     )
     .limit(1);
 
-  if (!existingRequest) {
+  if (!existingRequest || existingRequest.status === "accepted") {
     res.status(404).json({ error: "Rejected request not found" });
     return;
   }
@@ -686,6 +723,16 @@ export const rejoinMess = async (req: AuthedRequest, res: Response) => {
     .from(messesTable)
     .where(eq(messesTable.id, existingRequest.messId))
     .limit(1);
+
+  if (existingRequest.status === "pending") {
+    res.json({
+      request: toPendingRequestResponse(existingRequest.id, {
+        id: existingRequest.messId,
+        name: mess?.name ?? "Unknown Mess",
+      }),
+    });
+    return;
+  }
 
   await updateMemberRequestStatus(existingRequest.id, "pending");
   const [user] = await db

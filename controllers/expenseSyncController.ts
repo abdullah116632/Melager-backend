@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import type { Response } from "express";
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import {
   db,
   expenseDaysTable,
@@ -8,6 +8,23 @@ import {
 } from "../db/dbConfig.js";
 import type { AuthedRequest } from "../middleware/auth.js";
 import { resolveMessAccess } from "../utils/messAccessUtils.js";
+import { emitToMess } from "../realtime/socket.js";
+
+interface ExpenseItem {
+  id: string;
+  name: string;
+  amount: number;
+}
+
+const normalizeExpenseItems = (items: unknown[]): ExpenseItem[] =>
+  items.map((item: any) => ({
+    id: String(item?.id ?? ""),
+    name: String(item?.name ?? "").trim(),
+    amount: Number(item?.amount),
+  }));
+
+const expenseItemsHash = (items: ExpenseItem[]) =>
+  createHash("sha256").update(JSON.stringify(items)).digest("hex");
 
 export const syncExpenseDay = async (req: AuthedRequest, res: Response) => {
   const userId = req.auth!.userId,
@@ -15,7 +32,8 @@ export const syncExpenseDay = async (req: AuthedRequest, res: Response) => {
     p = req.body?.payload ?? {},
     ym = String(p.yearMonth ?? ""),
     day = Number(p.day),
-    items = Array.isArray(p.items) ? p.items : [];
+    items = Array.isArray(p.items) ? p.items : [],
+    normalizedItems = normalizeExpenseItems(items);
   if (
     !id ||
     !/^\d{4}-(0[1-9]|1[0-2])$/.test(ym) ||
@@ -74,23 +92,39 @@ export const syncExpenseDay = async (req: AuthedRequest, res: Response) => {
           });
         return o.responseBody;
       }
-      const current = await tx.execute(
-        sql`SELECT md5(coalesce(items::text,'[]')) AS hash FROM expense_days WHERE mess_id=${access.messId} AND year_month=${ym} AND day=${day}`,
-      );
-      if ((current.rows[0]?.hash ?? "empty") !== String(p.baseHash ?? "empty"))
+      const [current] = await tx
+        .select({ items: expenseDaysTable.items })
+        .from(expenseDaysTable)
+        .where(
+          and(
+            eq(expenseDaysTable.messId, access.messId),
+            eq(expenseDaysTable.yearMonth, ym),
+            eq(expenseDaysTable.day, day),
+          ),
+        )
+        .limit(1);
+      const currentHash = current
+        ? expenseItemsHash(normalizeExpenseItems(current.items ?? []))
+        : "empty";
+      if (currentHash !== String(p.baseHash ?? "empty"))
         throw Object.assign(new Error("Expense changed on another device"), {
           status: 409,
         });
       await tx
         .insert(expenseDaysTable)
-        .values({ messId: access.messId, yearMonth: ym, day, items })
+        .values({
+          messId: access.messId,
+          yearMonth: ym,
+          day,
+          items: normalizedItems,
+        })
         .onConflictDoUpdate({
           target: [
             expenseDaysTable.messId,
             expenseDaysTable.yearMonth,
             expenseDaysTable.day,
           ],
-          set: { items },
+          set: { items: normalizedItems },
         });
       const result = { success: true };
       await tx
@@ -102,6 +136,10 @@ export const syncExpenseDay = async (req: AuthedRequest, res: Response) => {
         })
         .where(eq(syncClientMutationsTable.id, r.id));
       return result;
+    });
+    emitToMess(access.messId, "expenses:updated", {
+      messId: access.messId,
+      yearMonth: ym,
     });
     res.json(body);
   } catch (e) {

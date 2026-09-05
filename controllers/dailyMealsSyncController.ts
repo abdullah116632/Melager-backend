@@ -3,6 +3,7 @@ import type { Response } from "express";
 import { and, eq, sql } from "drizzle-orm";
 
 import {
+  consumersTable,
   db,
   syncChangesTable,
   syncClientMutationsTable,
@@ -25,8 +26,10 @@ export const syncDailyMeal = async (req: AuthedRequest, res: Response) => {
   if (
     !clientMutationId ||
     !/^\d{4}-(0[1-9]|1[0-2])$/.test(yearMonth) ||
-    !Number.isInteger(consumerId) ||
-    !Number.isInteger(day) || day < 1 ||
+    !Number.isSafeInteger(consumerId) ||
+    consumerId <= 0 ||
+    !Number.isInteger(day) ||
+    day < 1 ||
     !/^\d+(?:\.\d{1,3})?$/.test(countRaw) ||
     !/^\d+(?:\.\d{1,3})?$/.test(baseCountRaw)
   ) {
@@ -48,6 +51,22 @@ export const syncDailyMeal = async (req: AuthedRequest, res: Response) => {
 
   try {
     const result = await db.transaction(async (tx) => {
+      const [consumer] = await tx
+        .select({ id: consumersTable.id })
+        .from(consumersTable)
+        .where(
+          and(
+            eq(consumersTable.id, consumerId),
+            eq(consumersTable.messId, access.messId),
+          ),
+        )
+        .limit(1);
+      if (!consumer) {
+        throw Object.assign(new Error("Consumer not found in this mess"), {
+          status: 404,
+        });
+      }
+
       const [receipt] = await tx
         .insert(syncClientMutationsTable)
         .values({
@@ -91,7 +110,9 @@ export const syncDailyMeal = async (req: AuthedRequest, res: Response) => {
         RETURNING count
       `);
       if (write.rows.length === 0) {
-        throw Object.assign(new Error("Meal value changed by another device"), { status: 409 });
+        throw Object.assign(new Error("Meal value changed by another device"), {
+          status: 409,
+        });
       }
       const body = { count };
       await tx.insert(syncChangesTable).values({
@@ -104,7 +125,11 @@ export const syncDailyMeal = async (req: AuthedRequest, res: Response) => {
       });
       await tx
         .update(syncClientMutationsTable)
-        .set({ responseStatus: 200, responseBody: body, completedAt: new Date() })
+        .set({
+          responseStatus: 200,
+          responseBody: body,
+          completedAt: new Date(),
+        })
         .where(eq(syncClientMutationsTable.id, receipt.id));
       return body;
     });

@@ -56,6 +56,19 @@ const colors = new Set([
 const toJsonValue = (value: unknown) =>
   JSON.parse(JSON.stringify(value)) as Record<string, unknown>;
 
+const readBaseUpdatedAt = (payload: Record<string, unknown>): Date => {
+  const value = new Date(String(payload.baseUpdatedAt ?? ""));
+  if (Number.isNaN(value.getTime())) {
+    throw new SyncRequestError("A valid baseUpdatedAt is required");
+  }
+  return value;
+};
+
+const lockNoticeOrder = (
+  tx: Parameters<Parameters<typeof db.transaction>[0]>[0],
+  messId: number,
+) => tx.execute(sql`SELECT pg_advisory_xact_lock(${messId}, 11001)`);
+
 const readFields = (payload: Record<string, unknown>) => {
   const title = String(payload.title ?? "").trim();
   const body = String(payload.body ?? "").trim();
@@ -179,6 +192,7 @@ export const syncNoticeMutation = async (req: AuthedRequest, res: Response) => {
       let changeOperation: "create" | "update" | "delete" | "upsert" = "update";
 
       if (operation === "notice_create") {
+        await lockNoticeOrder(tx, access.messId);
         const fields = readFields(payload);
         const existing = await tx
           .select({ id: noticesTable.id })
@@ -235,6 +249,7 @@ export const syncNoticeMutation = async (req: AuthedRequest, res: Response) => {
       } else if (operation === "notice_update") {
         const serverId = parsePositiveInteger(payload.serverId);
         if (!serverId) throw new SyncRequestError("Invalid notice id");
+        const baseUpdatedAt = readBaseUpdatedAt(payload);
         const [notice] = await tx
           .update(noticesTable)
           .set({ ...readFields(payload), updatedAt: new Date() })
@@ -242,22 +257,58 @@ export const syncNoticeMutation = async (req: AuthedRequest, res: Response) => {
             and(
               eq(noticesTable.id, serverId),
               eq(noticesTable.messId, access.messId),
+              sql`date_trunc('milliseconds', ${noticesTable.updatedAt}) = ${baseUpdatedAt}`,
             ),
           )
           .returning();
-        if (!notice) throw new SyncRequestError("Notice not found", 404);
+        if (!notice) {
+          const [current] = await tx
+            .select({ id: noticesTable.id })
+            .from(noticesTable)
+            .where(
+              and(
+                eq(noticesTable.id, serverId),
+                eq(noticesTable.messId, access.messId),
+              ),
+            )
+            .limit(1);
+          throw new SyncRequestError(
+            current ? "Notice changed on another device" : "Notice not found",
+            current ? 409 : 404,
+          );
+        }
         body = { notice };
       } else if (operation === "notice_delete") {
         const serverId = parsePositiveInteger(payload.serverId);
         if (!serverId) throw new SyncRequestError("Invalid notice id");
-        await tx
+        const baseUpdatedAt = readBaseUpdatedAt(payload);
+        await lockNoticeOrder(tx, access.messId);
+        const [deleted] = await tx
           .delete(noticesTable)
           .where(
             and(
               eq(noticesTable.id, serverId),
               eq(noticesTable.messId, access.messId),
+              sql`date_trunc('milliseconds', ${noticesTable.updatedAt}) = ${baseUpdatedAt}`,
             ),
+          )
+          .returning({ id: noticesTable.id });
+        if (!deleted) {
+          const [current] = await tx
+            .select({ id: noticesTable.id })
+            .from(noticesTable)
+            .where(
+              and(
+                eq(noticesTable.id, serverId),
+                eq(noticesTable.messId, access.messId),
+              ),
+            )
+            .limit(1);
+          throw new SyncRequestError(
+            current ? "Notice changed on another device" : "Notice not found",
+            current ? 409 : 404,
           );
+        }
         body = { success: true, serverId };
         changeOperation = "delete";
       } else if (operation === "notice_reorder") {
@@ -273,6 +324,39 @@ export const syncNoticeMutation = async (req: AuthedRequest, res: Response) => {
           );
         }
         const noticeIds = rawIds.map((id) => parsePositiveInteger(id)!);
+        const rawBaseIds = payload.baseNoticeIds;
+        if (
+          !Array.isArray(rawBaseIds) ||
+          rawBaseIds.some((id) => !parsePositiveInteger(id))
+        ) {
+          throw new SyncRequestError("A valid baseNoticeIds array is required");
+        }
+        const baseNoticeIds = rawBaseIds.map((id) => parsePositiveInteger(id)!);
+        if (
+          baseNoticeIds.length !== noticeIds.length ||
+          new Set(baseNoticeIds).size !== baseNoticeIds.length
+        ) {
+          throw new SyncRequestError(
+            "baseNoticeIds must match the reordered notice set",
+          );
+        }
+        await lockNoticeOrder(tx, access.messId);
+        const currentOrder = await tx
+          .select({ id: noticesTable.id })
+          .from(noticesTable)
+          .where(eq(noticesTable.messId, access.messId))
+          .orderBy(asc(noticesTable.serialNo));
+        if (
+          currentOrder.length !== baseNoticeIds.length ||
+          currentOrder.some(
+            (notice, index) => notice.id !== baseNoticeIds[index],
+          )
+        ) {
+          throw new SyncRequestError(
+            "Notice order changed on another device",
+            409,
+          );
+        }
         const owned = await tx
           .select({ id: noticesTable.id })
           .from(noticesTable)
@@ -309,11 +393,18 @@ export const syncNoticeMutation = async (req: AuthedRequest, res: Response) => {
         body = { notices };
         changeOperation = "upsert";
       } else {
+        const requestedNoticeId = Number(payload.lastReadNoticeId);
+        if (!Number.isSafeInteger(requestedNoticeId) || requestedNoticeId < 0) {
+          throw new SyncRequestError("A valid lastReadNoticeId is required");
+        }
         const [latest] = await tx
           .select({ id: max(noticesTable.id) })
           .from(noticesTable)
           .where(eq(noticesTable.messId, access.messId));
-        const latestNoticeId = latest?.id == null ? null : Number(latest.id);
+        const latestNoticeId = Math.min(
+          requestedNoticeId,
+          Number(latest?.id ?? 0),
+        );
         await tx
           .insert(noticeReadStatesTable)
           .values({
@@ -327,9 +418,32 @@ export const syncNoticeMutation = async (req: AuthedRequest, res: Response) => {
               noticeReadStatesTable.messId,
               noticeReadStatesTable.userId,
             ],
-            set: { lastReadNoticeId: latestNoticeId, updatedAt: new Date() },
+            set: {
+              lastReadNoticeId: sql`GREATEST(COALESCE(${noticeReadStatesTable.lastReadNoticeId}, 0), ${latestNoticeId})`,
+              updatedAt: new Date(),
+            },
           });
-        body = { unreadCount: 0 };
+        const [readState] = await tx
+          .select({ id: noticeReadStatesTable.lastReadNoticeId })
+          .from(noticeReadStatesTable)
+          .where(
+            and(
+              eq(noticeReadStatesTable.messId, access.messId),
+              eq(noticeReadStatesTable.userId, userId),
+            ),
+          )
+          .limit(1);
+        const [unread] = await tx
+          .select({ total: sql<number>`count(*)` })
+          .from(noticesTable)
+          .where(
+            and(
+              eq(noticesTable.messId, access.messId),
+              gt(noticesTable.id, readState?.id ?? 0),
+              sql`${noticesTable.createdByUserId} <> ${userId}`,
+            ),
+          );
+        body = { unreadCount: Number(unread?.total ?? 0) };
       }
 
       const jsonBody = toJsonValue(body);

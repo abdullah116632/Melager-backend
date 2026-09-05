@@ -494,7 +494,13 @@ const handleToggleMealOptOut = async (
   options: { unlimitedFuture: boolean },
 ) => {
   const userId = req.auth!.userId;
-  const { messId: messIdRaw, date, mealType, scope: scopeRaw } = req.body ?? {};
+  const {
+    messId: messIdRaw,
+    date,
+    mealType,
+    scope: scopeRaw,
+    isOptedOut: requestedOptOutState,
+  } = req.body ?? {};
   const messId = parsePositiveInteger(messIdRaw);
   const scope: MealOptOutScope = scopeRaw === "ongoing" ? "ongoing" : "day";
 
@@ -506,6 +512,13 @@ const handleToggleMealOptOut = async (
     res
       .status(400)
       .json({ error: "mealType must be breakfast, lunch, or dinner" });
+    return;
+  }
+  if (
+    requestedOptOutState !== undefined &&
+    typeof requestedOptOutState !== "boolean"
+  ) {
+    res.status(400).json({ error: "isOptedOut must be a boolean" });
     return;
   }
 
@@ -528,6 +541,33 @@ const handleToggleMealOptOut = async (
     });
     return;
   }
+
+  const effectiveRows = (
+    await getEffectiveMealOptOuts(messId, targetDate)
+  ).filter(
+    (item) =>
+      item.consumerId === consumerId && item.mealType === (mealType as string),
+  );
+  const currentlyOptedOut = effectiveRows.length > 0;
+  const shouldBeOptedOut =
+    typeof requestedOptOutState === "boolean"
+      ? requestedOptOutState
+      : !currentlyOptedOut;
+
+  // Resolve retries before time-window and availability validation. The first
+  // request may have succeeded just before its response was lost.
+  if (shouldBeOptedOut === currentlyOptedOut) {
+    res.json({
+      isOptedOut: currentlyOptedOut,
+      scope: currentlyOptedOut
+        ? (effectiveRows.find((item) => item.scope === "ongoing")?.scope ??
+          effectiveRows[0]?.scope ??
+          scope)
+        : null,
+    });
+    return;
+  }
+
   if (!options.unlimitedFuture) {
     await ensureMealControlSnapshots(messId, targetDate);
   }
@@ -559,14 +599,7 @@ const handleToggleMealOptOut = async (
     }
   }
 
-  const effectiveRows = (
-    await getEffectiveMealOptOuts(messId, targetDate)
-  ).filter(
-    (item) =>
-      item.consumerId === consumerId && item.mealType === (mealType as string),
-  );
-
-  if (effectiveRows.length > 0) {
+  if (!shouldBeOptedOut) {
     const dayIds = effectiveRows
       .filter((item) => item.scope === "day")
       .map((item) => item.id);

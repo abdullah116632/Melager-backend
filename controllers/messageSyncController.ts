@@ -1,15 +1,17 @@
 import { createHash } from "node:crypto";
 import type { Response } from "express";
-import { and, eq } from "drizzle-orm";
+import { and, eq, isNull, sql } from "drizzle-orm";
 import {
+  consumersTable,
   db,
   messagesTable,
   syncClientMutationsTable,
   usersTable,
 } from "../db/dbConfig.js";
+import { deliverMessagePushes } from "../lib/notificationDelivery.js";
 import type { AuthedRequest } from "../middleware/auth.js";
 import { resolveMessAccess } from "../utils/messAccessUtils.js";
-import { emitToMess } from "../realtime/socket.js";
+import { emitToMess, isUserViewingConversation } from "../realtime/socket.js";
 export const syncMessage = async (req: AuthedRequest, res: Response) => {
   const userId = req.auth!.userId,
     id = String(req.body?.clientMutationId ?? ""),
@@ -57,7 +59,11 @@ export const syncMessage = async (req: AuthedRequest, res: Response) => {
           throw Object.assign(new Error("Duplicate message conflict"), {
             status: 409,
           });
-        return o.responseBody;
+        return {
+          response: o.responseBody as { message: { id: number } },
+          isNew: false as const,
+          pushRecipientUserIds: [] as number[],
+        };
       }
       const [sender] = await tx
         .select({ name: usersTable.name })
@@ -68,7 +74,31 @@ export const syncMessage = async (req: AuthedRequest, res: Response) => {
         .insert(messagesTable)
         .values({ messId: access.messId, senderUserId: userId, body })
         .returning();
-      const out = { message: { ...m!, senderName: sender?.name ?? "You" } };
+      const senderName = sender?.name ?? "You";
+      const out = {
+        message: { ...m!, senderName, clientMutationId: id },
+      };
+      const recipients = await tx
+        .select({ userId: consumersTable.userId })
+        .from(consumersTable)
+        .where(
+          and(
+            eq(consumersTable.messId, access.messId),
+            isNull(consumersTable.accountDeletedAt),
+            sql`${consumersTable.userId} is not null`,
+          ),
+        );
+      const pushRecipientUserIds = [
+        ...new Set(
+          recipients.flatMap((recipient) =>
+            recipient.userId == null ? [] : [recipient.userId],
+          ),
+        ),
+      ].filter(
+        (recipientUserId) =>
+          recipientUserId !== userId &&
+          !isUserViewingConversation(access.messId, recipientUserId),
+      );
       await tx
         .update(syncClientMutationsTable)
         .set({
@@ -77,10 +107,19 @@ export const syncMessage = async (req: AuthedRequest, res: Response) => {
           completedAt: new Date(),
         })
         .where(eq(syncClientMutationsTable.id, r.id));
-      return out;
+      return { response: out, isNew: true as const, pushRecipientUserIds };
     });
-    emitToMess(access.messId, "message:created", (result as any).message);
-    res.json(result);
+    if (result.isNew) {
+      emitToMess(access.messId, "message:created", result.response.message);
+      void deliverMessagePushes({
+        recipientUserIds: result.pushRecipientUserIds,
+        messId: access.messId,
+        messageId: result.response.message.id,
+        senderName: result.response.message.senderName,
+        body,
+      });
+    }
+    res.json(result.response);
   } catch (e) {
     const s = (e as any).status;
     if (s) {

@@ -1,4 +1,8 @@
 export const parsePositiveInteger = (value: unknown): number | null => {
-  const parsedValue = Number.parseInt(String(value), 10);
-  return Number.isNaN(parsedValue) || parsedValue <= 0 ? null : parsedValue;
+  const raw = String(value ?? "").trim();
+  if (!/^\d+$/.test(raw)) return null;
+  const parsedValue = Number(raw);
+  return Number.isSafeInteger(parsedValue) && parsedValue > 0
+    ? parsedValue
+    : null;
 };

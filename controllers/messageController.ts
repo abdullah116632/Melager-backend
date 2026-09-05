@@ -51,6 +51,39 @@ export const getMessages = async (req: AuthedRequest, res: Response) => {
   }
 
   const limit = parseLimit(req.query.limit);
+  const afterId =
+    req.query.afterId === undefined ? null : Number(req.query.afterId);
+  if (afterId !== null && (!Number.isSafeInteger(afterId) || afterId < 0)) {
+    res.status(400).json({ error: "afterId must be a non-negative integer" });
+    return;
+  }
+  if (afterId !== null) {
+    const messages = await db
+      .select({
+        id: messagesTable.id,
+        messId: messagesTable.messId,
+        senderUserId: messagesTable.senderUserId,
+        senderName: usersTable.name,
+        body: messagesTable.body,
+        createdAt: messagesTable.createdAt,
+        updatedAt: messagesTable.updatedAt,
+      })
+      .from(messagesTable)
+      .innerJoin(usersTable, eq(messagesTable.senderUserId, usersTable.id))
+      .where(
+        and(
+          eq(messagesTable.messId, access.messId),
+          gt(messagesTable.id, afterId),
+        ),
+      )
+      .orderBy(asc(messagesTable.id))
+      .limit(MAX_MESSAGE_LIMIT);
+    res.json({
+      messages,
+      nextSyncCursor: messages.at(-1)?.id ?? afterId,
+    });
+    return;
+  }
   const beforeDate = parseCursorDate(req.query.beforeCreatedAt);
   const beforeId = req.query.beforeId
     ? parsePositiveInteger(req.query.beforeId)
@@ -244,11 +277,28 @@ export const markMessagesRead = async (req: AuthedRequest, res: Response) => {
     return;
   }
 
-  const [latest] = await db
-    .select({ id: max(messagesTable.id) })
-    .from(messagesTable)
-    .where(eq(messagesTable.messId, access.messId));
-  const latestMessageId = latest?.id == null ? null : Number(latest.id);
+  const suppliedWatermark = req.body?.lastReadMessageId;
+  let latestMessageId: number | null;
+  if (suppliedWatermark === undefined) {
+    const [latest] = await db
+      .select({ id: max(messagesTable.id) })
+      .from(messagesTable)
+      .where(eq(messagesTable.messId, access.messId));
+    latestMessageId = latest?.id == null ? null : Number(latest.id);
+  } else {
+    latestMessageId = Number(suppliedWatermark);
+    if (!Number.isSafeInteger(latestMessageId) || latestMessageId < 0) {
+      res
+        .status(400)
+        .json({ error: "lastReadMessageId must be a non-negative integer" });
+      return;
+    }
+    const [latest] = await db
+      .select({ id: max(messagesTable.id) })
+      .from(messagesTable)
+      .where(eq(messagesTable.messId, access.messId));
+    latestMessageId = Math.min(latestMessageId, Number(latest?.id ?? 0));
+  }
   await db
     .insert(messageReadStatesTable)
     .values({
@@ -260,10 +310,11 @@ export const markMessagesRead = async (req: AuthedRequest, res: Response) => {
     .onConflictDoUpdate({
       target: [messageReadStatesTable.messId, messageReadStatesTable.userId],
       set: {
-        lastReadMessageId: latestMessageId,
+        lastReadMessageId: sql`GREATEST(COALESCE(${messageReadStatesTable.lastReadMessageId}, 0), ${latestMessageId ?? 0})`,
         updatedAt: new Date(),
       },
     });
 
-  res.json({ unreadCount: 0 });
+  const unreadCount = await getUnreadCount(access.messId, req.auth!.userId);
+  res.json({ unreadCount });
 };
