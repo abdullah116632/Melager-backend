@@ -434,6 +434,27 @@ export const mealControlTable = pgTable(
     breakfastEnabled: boolean("breakfast_enabled").notNull().default(true),
     lunchEnabled: boolean("lunch_enabled").notNull().default(true),
     dinnerEnabled: boolean("dinner_enabled").notNull().default(true),
+    // A date row may exist only to hold that day's menu. Availability and the
+    // on/off window inherit independently from the helper unless explicitly
+    // changed for that particular date.
+    breakfastEnabledOverride: boolean("breakfast_enabled_override")
+      .notNull()
+      .default(false),
+    breakfastWindowOverride: boolean("breakfast_window_override")
+      .notNull()
+      .default(false),
+    lunchEnabledOverride: boolean("lunch_enabled_override")
+      .notNull()
+      .default(false),
+    lunchWindowOverride: boolean("lunch_window_override")
+      .notNull()
+      .default(false),
+    dinnerEnabledOverride: boolean("dinner_enabled_override")
+      .notNull()
+      .default(false),
+    dinnerWindowOverride: boolean("dinner_window_override")
+      .notNull()
+      .default(false),
     breakfastOptOutStart: text("breakfast_start_window"),
     breakfastOptOutEnd: text("breakfast_end_window"),
     lunchOptOutStart: text("lunch_start_window"),
@@ -448,6 +469,30 @@ export const mealControlTable = pgTable(
   (t) => [
     unique("meal_control_mess_date_uq").on(t.messId, t.date),
     index("meal_control_mess_date_idx").on(t.messId, t.date),
+  ],
+);
+
+export const mealControlHelperTable = pgTable(
+  "meal_control_helper",
+  {
+    id: serial("id").primaryKey(),
+    messId: integer("mess_id")
+      .notNull()
+      .references(() => messesTable.id),
+    breakfastEnabled: boolean("breakfast_enabled").notNull().default(true),
+    lunchEnabled: boolean("lunch_enabled").notNull().default(true),
+    dinnerEnabled: boolean("dinner_enabled").notNull().default(true),
+    breakfastOptOutStart: text("breakfast_start_window"),
+    breakfastOptOutEnd: text("breakfast_end_window"),
+    lunchOptOutStart: text("lunch_start_window"),
+    lunchOptOutEnd: text("lunch_end_window"),
+    dinnerOptOutStart: text("dinner_start_window"),
+    dinnerOptOutEnd: text("dinner_end_window"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (t) => [
+    unique("meal_control_helper_mess_uq").on(t.messId),
+    index("meal_control_helper_mess_idx").on(t.messId),
   ],
 );
 

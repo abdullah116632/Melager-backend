@@ -6,6 +6,7 @@ import {
   consumersTable,
   depositEntriesTable,
   depositsTable,
+  mealControlHelperTable,
   mealOptOutsTable,
   mealsTable,
   usersTable,
@@ -63,6 +64,54 @@ export const createMess = async (req: AuthedRequest, res: Response) => {
   });
 
   res.json({ mess: toMessResponse(mess) });
+};
+
+// POST /api/v2/mess/create — creates a mess with its helper baseline
+export const createMessV2 = async (req: AuthedRequest, res: Response) => {
+  const userId = req.auth!.userId;
+  const { name } = req.body ?? {};
+  if (!name?.trim()) {
+    res.status(400).json({ error: "Mess name is required" });
+    return;
+  }
+
+  const result = await db.transaction(async (tx) => {
+    const messKey = generateMessKey();
+    const [mess] = await tx
+      .insert(messesTable)
+      .values({ name: name.trim(), messKey, adminUserId: userId })
+      .returning();
+
+    const [user] = await tx
+      .select({ name: usersTable.name })
+      .from(usersTable)
+      .where(eq(usersTable.id, userId))
+      .limit(1);
+
+    await tx.insert(consumersTable).values({
+      messId: mess.id,
+      name: user?.name ?? "Admin",
+      userId,
+      isAdmin: true,
+    });
+
+    await tx.insert(mealControlHelperTable).values({
+      messId: mess.id,
+      breakfastEnabled: true,
+      lunchEnabled: true,
+      dinnerEnabled: true,
+      breakfastOptOutStart: "04:00",
+      breakfastOptOutEnd: "08:00",
+      lunchOptOutStart: "08:00",
+      lunchOptOutEnd: "13:00",
+      dinnerOptOutStart: "13:00",
+      dinnerOptOutEnd: "17:00",
+    });
+
+    return mess;
+  });
+
+  res.json({ mess: toMessResponse(result) });
 };
 
 // POST /api/mess/join — user can join multiple messes; re-request after rejection

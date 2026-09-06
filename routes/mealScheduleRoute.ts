@@ -6,6 +6,7 @@ import {
   getMealStatusDayV2,
   getTodaySchedule,
   setMealSchedule,
+  setMealScheduleV2,
   toggleMealOptOut,
   toggleMealOptOutV2,
 } from "../controllers/mealScheduleController.js";
@@ -18,6 +19,7 @@ router.put("/mess/meal-schedule", requireAuth, setMealSchedule);
 router.post("/mess/meal-opt-out", requireAuth, toggleMealOptOut);
 router.get("/mess/meal-opt-outs", requireAuth, getMealOptOuts);
 router.get("/v2/mess/meal-status/day", requireAuth, getMealStatusDayV2);
+router.put("/v2/mess/meal-schedule", requireAuth, setMealScheduleV2);
 router.get(
   "/v2/mess/meal-status/calendar",
   requireAuth,

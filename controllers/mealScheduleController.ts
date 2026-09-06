@@ -3,6 +3,7 @@ import { and, eq, gt, gte, inArray, isNull, lte, or, sql } from "drizzle-orm";
 import {
   db,
   consumersTable,
+  mealControlHelperTable,
   mealControlTable,
   mealOptOutsTable,
   notificationsTable,
@@ -14,6 +15,7 @@ import {
   addDays,
   ensureMealControlSnapshots,
   getMergedSchedule,
+  getV2MergedSchedule,
   getTodayDate,
   isBeyondFutureLimit,
   isWithinMealOptOutWindow,
@@ -101,12 +103,18 @@ const getSchedulePayload = async (
   messId: number,
   consumerId: number | null,
   date: string,
+  scheduleReader: typeof getMergedSchedule = getMergedSchedule,
+  includeConsumers = false,
 ) => {
   const [schedule, allConsumers, optOutRows] = await Promise.all([
-    getMergedSchedule(messId, date),
+    scheduleReader(messId, date),
     db
-      .select({ id: consumersTable.id })
+      .select({
+        id: consumersTable.id,
+        name: sql<string>`coalesce(${usersTable.name}, ${consumersTable.name})`,
+      })
       .from(consumersTable)
+      .leftJoin(usersTable, eq(consumersTable.userId, usersTable.id))
       .where(eq(consumersTable.messId, messId)),
     getEffectiveMealOptOuts(messId, date),
   ]);
@@ -138,7 +146,7 @@ const getSchedulePayload = async (
       : 0,
   };
 
-  return {
+  const payload = {
     date,
     schedule,
     myOptOuts,
@@ -147,6 +155,19 @@ const getSchedulePayload = async (
     totalActive:
       activeByMeal.breakfast + activeByMeal.lunch + activeByMeal.dinner,
   };
+  if (includeConsumers) {
+    return {
+      ...payload,
+      consumers: allConsumers.map((consumer) => ({
+        consumerId: consumer.id,
+        consumerName: consumer.name,
+        breakfast: effectiveOptOutKeys.has(`${consumer.id}:breakfast`),
+        lunch: effectiveOptOutKeys.has(`${consumer.id}:lunch`),
+        dinner: effectiveOptOutKeys.has(`${consumer.id}:dinner`),
+      })),
+    };
+  }
+  return payload;
 };
 
 // GET /api/mess/today-schedule?messId=X[&date=YYYY-MM-DD]
@@ -187,7 +208,351 @@ export const getMealStatusDayV2 = async (req: AuthedRequest, res: Response) => {
     return;
   }
 
-  res.json(await getSchedulePayload(access.messId, access.consumerId, date));
+  res.json(
+    await getSchedulePayload(
+      access.messId,
+      access.consumerId,
+      date,
+      getV2MergedSchedule,
+      access.role === "admin",
+    ),
+  );
+};
+
+const hasBodyField = (body: Record<string, unknown>, field: string) =>
+  Object.prototype.hasOwnProperty.call(body, field);
+
+const normalizeWindow = (value: unknown): string | null => {
+  if (value === null) return null;
+  if (typeof value !== "string") return null;
+  const window = value.trim();
+  return window || null;
+};
+
+const TIME_PATTERN = /^(?:[01]\d|2[0-3]):[0-5]\d$/;
+
+const validateMealWindow = (
+  mealLabel: string,
+  start: string | null,
+  end: string | null,
+): string | null => {
+  if (start === null && end === null) return null;
+  if (!start || !end)
+    return `${mealLabel} on/off window requires both a start and end time`;
+  if (!TIME_PATTERN.test(start) || !TIME_PATTERN.test(end))
+    return `${mealLabel} on/off window must use HH:MM (24-hour) format`;
+  if (start > end)
+    return `${mealLabel} on/off window end time must be after its start time`;
+  return null;
+};
+
+// PUT /api/v2/mess/meal-schedule — helper-backed schedule updates
+export const setMealScheduleV2 = async (req: AuthedRequest, res: Response) => {
+  const userId = req.auth!.userId;
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  const messIdRaw = body.messId;
+  const access = await resolveMessAccess(userId, messIdRaw, {
+    adminOnly: true,
+  });
+  if (!access.ok) {
+    res.status(access.status).json({ error: access.error });
+    return;
+  }
+
+  const targetDate = String(body.date ?? getTodayDate());
+  const today = getTodayDate();
+  if (!isValidIsoDate(targetDate)) {
+    res.status(400).json({ error: "date must be a valid YYYY-MM-DD value" });
+    return;
+  }
+  if (targetDate < today) {
+    res.status(403).json({ error: "Past meal schedules are read-only" });
+    return;
+  }
+  const existingSchedule = await getV2MergedSchedule(access.messId, targetDate);
+  const nextSchedule = {
+    breakfastEnabled:
+      typeof body.breakfastEnabled === "boolean"
+        ? body.breakfastEnabled
+        : existingSchedule.breakfastEnabled,
+    breakfastOptOutStart: hasBodyField(body, "breakfastOptOutStart")
+      ? normalizeWindow(body.breakfastOptOutStart)
+      : existingSchedule.breakfastOptOutStart,
+    breakfastOptOutEnd: hasBodyField(body, "breakfastOptOutEnd")
+      ? normalizeWindow(body.breakfastOptOutEnd)
+      : existingSchedule.breakfastOptOutEnd,
+    lunchEnabled:
+      typeof body.lunchEnabled === "boolean"
+        ? body.lunchEnabled
+        : existingSchedule.lunchEnabled,
+    lunchOptOutStart: hasBodyField(body, "lunchOptOutStart")
+      ? normalizeWindow(body.lunchOptOutStart)
+      : existingSchedule.lunchOptOutStart,
+    lunchOptOutEnd: hasBodyField(body, "lunchOptOutEnd")
+      ? normalizeWindow(body.lunchOptOutEnd)
+      : existingSchedule.lunchOptOutEnd,
+    dinnerEnabled:
+      typeof body.dinnerEnabled === "boolean"
+        ? body.dinnerEnabled
+        : existingSchedule.dinnerEnabled,
+    dinnerOptOutStart: hasBodyField(body, "dinnerOptOutStart")
+      ? normalizeWindow(body.dinnerOptOutStart)
+      : existingSchedule.dinnerOptOutStart,
+    dinnerOptOutEnd: hasBodyField(body, "dinnerOptOutEnd")
+      ? normalizeWindow(body.dinnerOptOutEnd)
+      : existingSchedule.dinnerOptOutEnd,
+    breakfastMenu: hasBodyField(body, "breakfastMenu")
+      ? normalizeMenu(body.breakfastMenu)
+      : existingSchedule.breakfastMenu,
+    lunchMenu: hasBodyField(body, "lunchMenu")
+      ? normalizeMenu(body.lunchMenu)
+      : existingSchedule.lunchMenu,
+    dinnerMenu: hasBodyField(body, "dinnerMenu")
+      ? normalizeMenu(body.dinnerMenu)
+      : existingSchedule.dinnerMenu,
+  };
+
+  const availabilityAndWindowFields = [
+    "breakfastEnabled",
+    "breakfastOptOutStart",
+    "breakfastOptOutEnd",
+    "lunchEnabled",
+    "lunchOptOutStart",
+    "lunchOptOutEnd",
+    "dinnerEnabled",
+    "dinnerOptOutStart",
+    "dinnerOptOutEnd",
+  ];
+  const menuFields = ["breakfastMenu", "lunchMenu", "dinnerMenu"];
+  const hasAvailabilityOrWindowInput = availabilityAndWindowFields.some(
+    (field) => hasBodyField(body, field),
+  );
+  const hasMenuInput = menuFields.some((field) => hasBodyField(body, field));
+  const hasScheduleInput = hasAvailabilityOrWindowInput || hasMenuInput;
+
+  for (const [mealLabel, startField, endField, start, end] of [
+    [
+      "Breakfast",
+      "breakfastOptOutStart",
+      "breakfastOptOutEnd",
+      nextSchedule.breakfastOptOutStart,
+      nextSchedule.breakfastOptOutEnd,
+    ],
+    [
+      "Lunch",
+      "lunchOptOutStart",
+      "lunchOptOutEnd",
+      nextSchedule.lunchOptOutStart,
+      nextSchedule.lunchOptOutEnd,
+    ],
+    [
+      "Dinner",
+      "dinnerOptOutStart",
+      "dinnerOptOutEnd",
+      nextSchedule.dinnerOptOutStart,
+      nextSchedule.dinnerOptOutEnd,
+    ],
+  ] as const) {
+    if (!hasBodyField(body, startField) && !hasBodyField(body, endField))
+      continue;
+    const error = validateMealWindow(mealLabel, start, end);
+    if (error) {
+      res.status(400).json({ error });
+      return;
+    }
+  }
+
+  const existingControl = await db
+    .select({
+      id: mealControlTable.id,
+      breakfastEnabledOverride: mealControlTable.breakfastEnabledOverride,
+      breakfastWindowOverride: mealControlTable.breakfastWindowOverride,
+      lunchEnabledOverride: mealControlTable.lunchEnabledOverride,
+      lunchWindowOverride: mealControlTable.lunchWindowOverride,
+      dinnerEnabledOverride: mealControlTable.dinnerEnabledOverride,
+      dinnerWindowOverride: mealControlTable.dinnerWindowOverride,
+    })
+    .from(mealControlTable)
+    .where(
+      and(
+        eq(mealControlTable.messId, access.messId),
+        eq(mealControlTable.date, targetDate),
+      ),
+    )
+    .limit(1);
+  const hasExistingDateRow = existingControl.length > 0;
+  const existingDateControl = existingControl[0];
+  const touchedByAspect = {
+    breakfastEnabled: hasBodyField(body, "breakfastEnabled"),
+    breakfastWindow:
+      hasBodyField(body, "breakfastOptOutStart") ||
+      hasBodyField(body, "breakfastOptOutEnd"),
+    lunchEnabled: hasBodyField(body, "lunchEnabled"),
+    lunchWindow:
+      hasBodyField(body, "lunchOptOutStart") ||
+      hasBodyField(body, "lunchOptOutEnd"),
+    dinnerEnabled: hasBodyField(body, "dinnerEnabled"),
+    dinnerWindow:
+      hasBodyField(body, "dinnerOptOutStart") ||
+      hasBodyField(body, "dinnerOptOutEnd"),
+  };
+  const isToday = targetDate === today;
+  // Editing today always rewrites the ongoing baseline, so a touched aspect
+  // clears any day-only override it had; editing a future date always makes
+  // the touched aspect a day-only override. An aspect the request didn't
+  // touch keeps whatever override state the row already had.
+  const overrideFor = (touched: boolean, existing: boolean | undefined) =>
+    touched ? !isToday : (existing ?? false);
+  const dateControlOverrides = {
+    breakfastEnabledOverride: overrideFor(
+      touchedByAspect.breakfastEnabled,
+      existingDateControl?.breakfastEnabledOverride,
+    ),
+    breakfastWindowOverride: overrideFor(
+      touchedByAspect.breakfastWindow,
+      existingDateControl?.breakfastWindowOverride,
+    ),
+    lunchEnabledOverride: overrideFor(
+      touchedByAspect.lunchEnabled,
+      existingDateControl?.lunchEnabledOverride,
+    ),
+    lunchWindowOverride: overrideFor(
+      touchedByAspect.lunchWindow,
+      existingDateControl?.lunchWindowOverride,
+    ),
+    dinnerEnabledOverride: overrideFor(
+      touchedByAspect.dinnerEnabled,
+      existingDateControl?.dinnerEnabledOverride,
+    ),
+    dinnerWindowOverride: overrideFor(
+      touchedByAspect.dinnerWindow,
+      existingDateControl?.dinnerWindowOverride,
+    ),
+  };
+  const changedMenus = menuUpdates(existingSchedule, nextSchedule);
+
+  const notifications = await db.transaction(async (tx) => {
+    const mergedControlValues = {
+      breakfastEnabled: nextSchedule.breakfastEnabled,
+      lunchEnabled: nextSchedule.lunchEnabled,
+      dinnerEnabled: nextSchedule.dinnerEnabled,
+      breakfastOptOutStart: nextSchedule.breakfastOptOutStart,
+      breakfastOptOutEnd: nextSchedule.breakfastOptOutEnd,
+      lunchOptOutStart: nextSchedule.lunchOptOutStart,
+      lunchOptOutEnd: nextSchedule.lunchOptOutEnd,
+      dinnerOptOutStart: nextSchedule.dinnerOptOutStart,
+      dinnerOptOutEnd: nextSchedule.dinnerOptOutEnd,
+    };
+
+    const dateValues = {
+      messId: access.messId,
+      date: targetDate,
+      ...mergedControlValues,
+      ...dateControlOverrides,
+      breakfastMenu: nextSchedule.breakfastMenu,
+      lunchMenu: nextSchedule.lunchMenu,
+      dinnerMenu: nextSchedule.dinnerMenu,
+    };
+    const dateUpdateValues = {
+      ...mergedControlValues,
+      ...dateControlOverrides,
+      breakfastMenu: nextSchedule.breakfastMenu,
+      lunchMenu: nextSchedule.lunchMenu,
+      dinnerMenu: nextSchedule.dinnerMenu,
+    };
+
+    if (isToday) {
+      // Only the touched aspects become the new ongoing baseline — an
+      // untouched meal must never inherit another meal's day-only override
+      // value through this write.
+      const helperPatch: Partial<typeof mergedControlValues> = {};
+      if (touchedByAspect.breakfastEnabled)
+        helperPatch.breakfastEnabled = nextSchedule.breakfastEnabled;
+      if (touchedByAspect.breakfastWindow) {
+        helperPatch.breakfastOptOutStart = nextSchedule.breakfastOptOutStart;
+        helperPatch.breakfastOptOutEnd = nextSchedule.breakfastOptOutEnd;
+      }
+      if (touchedByAspect.lunchEnabled)
+        helperPatch.lunchEnabled = nextSchedule.lunchEnabled;
+      if (touchedByAspect.lunchWindow) {
+        helperPatch.lunchOptOutStart = nextSchedule.lunchOptOutStart;
+        helperPatch.lunchOptOutEnd = nextSchedule.lunchOptOutEnd;
+      }
+      if (touchedByAspect.dinnerEnabled)
+        helperPatch.dinnerEnabled = nextSchedule.dinnerEnabled;
+      if (touchedByAspect.dinnerWindow) {
+        helperPatch.dinnerOptOutStart = nextSchedule.dinnerOptOutStart;
+        helperPatch.dinnerOptOutEnd = nextSchedule.dinnerOptOutEnd;
+      }
+      if (Object.keys(helperPatch).length > 0) {
+        await tx
+          .insert(mealControlHelperTable)
+          .values({ messId: access.messId, ...helperPatch })
+          .onConflictDoUpdate({
+            target: mealControlHelperTable.messId,
+            set: helperPatch,
+          });
+      }
+    }
+
+    if (
+      (isToday && (hasExistingDateRow || hasMenuInput)) ||
+      (!isToday && hasScheduleInput)
+    ) {
+      // Menus always belong to a concrete date, including an explicit
+      // clearing of a menu (which is why this checks the input field, not
+      // whether the next menu value is non-empty).
+      await tx
+        .insert(mealControlTable)
+        .values(dateValues)
+        .onConflictDoUpdate({
+          target: [mealControlTable.messId, mealControlTable.date],
+          set: dateUpdateValues,
+        });
+    }
+
+    if (changedMenus.length === 0) return [];
+    const recipients = await tx
+      .select({ userId: consumersTable.userId })
+      .from(consumersTable)
+      .where(
+        and(
+          eq(consumersTable.messId, access.messId),
+          isNull(consumersTable.accountDeletedAt),
+        ),
+      );
+    const recipientUserIds = [
+      ...new Set(
+        recipients.flatMap((recipient) =>
+          recipient.userId == null || recipient.userId === userId
+            ? []
+            : [recipient.userId],
+        ),
+      ),
+    ];
+    if (recipientUserIds.length === 0) return [];
+    return tx
+      .insert(notificationsTable)
+      .values(
+        recipientUserIds.flatMap((recipientUserId) =>
+          changedMenus.map((change) => ({
+            messId: access.messId,
+            userId: recipientUserId,
+            type: "menu",
+            title: `${change.mealLabel} menu ${change.isNew ? "set" : "updated"}`,
+            body: `Menu for ${targetDate}: ${change.menu}`,
+          })),
+        ),
+      )
+      .returning();
+  });
+
+  void deliverNotifications(notifications);
+  emitToMess(access.messId, "meal-schedule:updated", {
+    messId: access.messId,
+    date: targetDate,
+  });
+  res.json({ success: true });
 };
 
 // GET /api/v2/mess/meal-status/calendar?messId=X&yearMonth=YYYY-MM
@@ -491,7 +856,11 @@ export const setMealSchedule = async (req: AuthedRequest, res: Response) => {
 const handleToggleMealOptOut = async (
   req: AuthedRequest,
   res: Response,
-  options: { unlimitedFuture: boolean },
+  options: {
+    unlimitedFuture: boolean;
+    allowAdminPastChanges: boolean;
+    scheduleReader: typeof getMergedSchedule;
+  },
 ) => {
   const userId = req.auth!.userId;
   const {
@@ -571,7 +940,7 @@ const handleToggleMealOptOut = async (
   if (!options.unlimitedFuture) {
     await ensureMealControlSnapshots(messId, targetDate);
   }
-  const schedule = await getMergedSchedule(messId, targetDate);
+  const schedule = await options.scheduleReader(messId, targetDate);
   const enabledKey = `${mealType}Enabled` as keyof typeof schedule;
   if (!schedule[enabledKey]) {
     res
@@ -579,7 +948,10 @@ const handleToggleMealOptOut = async (
       .json({ error: `${mealType} is currently disabled by the admin` });
     return;
   }
-  if (targetDate < today && role !== "admin") {
+  if (
+    targetDate < today &&
+    (role !== "admin" || !options.allowAdminPastChanges)
+  ) {
     res
       .status(403)
       .json({ error: "Cannot change meal on/off for a past date" });
@@ -728,12 +1100,20 @@ const notifyManagersOfMealStatusChange = async ({
 
 // POST /api/mess/meal-opt-out — legacy endpoint kept unchanged for old apps.
 export const toggleMealOptOut = (req: AuthedRequest, res: Response) =>
-  handleToggleMealOptOut(req, res, { unlimitedFuture: false });
+  handleToggleMealOptOut(req, res, {
+    unlimitedFuture: false,
+    allowAdminPastChanges: true,
+    scheduleReader: getMergedSchedule,
+  });
 
 // POST /api/v2/mess/meal-status/opt-out — supports any future date without
 // creating a meal-control snapshot for every date between today and the target.
 export const toggleMealOptOutV2 = (req: AuthedRequest, res: Response) =>
-  handleToggleMealOptOut(req, res, { unlimitedFuture: true });
+  handleToggleMealOptOut(req, res, {
+    unlimitedFuture: true,
+    allowAdminPastChanges: false,
+    scheduleReader: getV2MergedSchedule,
+  });
 
 // GET /api/mess/meal-opt-outs?messId=X&date=YYYY-MM-DD
 export const getMealOptOuts = async (req: AuthedRequest, res: Response) => {

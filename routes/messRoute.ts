@@ -4,6 +4,7 @@ import {
   acceptMemberRequest,
   addConsumer,
   createMess,
+  createMessV2,
   deleteConsumer,
   getConsumers,
   getMemberRequests,
@@ -19,6 +20,7 @@ import { requireAuth } from "../middleware/auth.js";
 const router = Router();
 
 router.post("/mess/create", requireAuth, createMess);
+router.post("/v2/mess/create", requireAuth, createMessV2);
 router.post("/mess/join", requireAuth, joinMess);
 router.get("/mess/member-requests", requireAuth, getMemberRequests);
 router.post(

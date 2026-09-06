@@ -1,5 +1,9 @@
 import { and, desc, eq, lte, ne } from "drizzle-orm";
-import { db, mealControlTable } from "../db/dbConfig.js";
+import {
+  db,
+  mealControlHelperTable,
+  mealControlTable,
+} from "../db/dbConfig.js";
 import { dateInAppTimeZone } from "./dateUtils.js";
 
 const DEFAULT_DATE = "__default__";
@@ -67,6 +71,15 @@ const getDateControl = async (messId: number, date: string) => {
   return row ?? null;
 };
 
+const getHelperControl = async (messId: number) => {
+  const [row] = await db
+    .select()
+    .from(mealControlHelperTable)
+    .where(eq(mealControlHelperTable.messId, messId))
+    .limit(1);
+  return row ?? null;
+};
+
 const getLatestControl = async (messId: number, date: string) => {
   const [row] = await db
     .select()
@@ -85,27 +98,100 @@ const getLatestControl = async (messId: number, date: string) => {
 };
 
 const scheduleFromControl = (
-  control: Awaited<ReturnType<typeof getDateControl>>,
+  control:
+    | Awaited<ReturnType<typeof getDateControl>>
+    | Awaited<ReturnType<typeof getHelperControl>>,
+  source: "day" | "ongoing" | null = control ? "day" : null,
 ) => {
-  const source = control ? ("day" as const) : null;
+  const menuFields = control as {
+    breakfastMenu?: string | null;
+    lunchMenu?: string | null;
+    dinnerMenu?: string | null;
+  } | null;
 
   return {
     breakfastEnabled: control?.breakfastEnabled ?? true,
-    breakfastMenu: control?.breakfastMenu ?? null,
+    breakfastMenu: menuFields?.breakfastMenu ?? null,
     breakfastOptOutStart: control?.breakfastOptOutStart ?? null,
     breakfastOptOutEnd: control?.breakfastOptOutEnd ?? null,
     lunchEnabled: control?.lunchEnabled ?? true,
-    lunchMenu: control?.lunchMenu ?? null,
+    lunchMenu: menuFields?.lunchMenu ?? null,
     lunchOptOutStart: control?.lunchOptOutStart ?? null,
     lunchOptOutEnd: control?.lunchOptOutEnd ?? null,
     dinnerEnabled: control?.dinnerEnabled ?? true,
-    dinnerMenu: control?.dinnerMenu ?? null,
+    dinnerMenu: menuFields?.dinnerMenu ?? null,
     dinnerOptOutStart: control?.dinnerOptOutStart ?? null,
     dinnerOptOutEnd: control?.dinnerOptOutEnd ?? null,
     availabilitySource: {
       breakfast: source,
       lunch: source,
       dinner: source,
+    },
+  };
+};
+
+/** Read v2 schedules without creating date snapshots as a side effect. */
+export const getV2MergedSchedule = async (
+  messId: number,
+  date: string,
+): Promise<ReturnType<typeof scheduleFromControl>> => {
+  const exact = await getDateControl(messId, date);
+  const helper = await getHelperControl(messId);
+  const helperSchedule = scheduleFromControl(helper, "ongoing");
+  if (!exact) return helperSchedule;
+
+  const dateSchedule = scheduleFromControl(exact, "day");
+  const breakfastEnabledOverride = exact.breakfastEnabledOverride;
+  const breakfastWindowOverride = exact.breakfastWindowOverride;
+  const lunchEnabledOverride = exact.lunchEnabledOverride;
+  const lunchWindowOverride = exact.lunchWindowOverride;
+  const dinnerEnabledOverride = exact.dinnerEnabledOverride;
+  const dinnerWindowOverride = exact.dinnerWindowOverride;
+
+  return {
+    ...helperSchedule,
+    breakfastEnabled: breakfastEnabledOverride
+      ? dateSchedule.breakfastEnabled
+      : helperSchedule.breakfastEnabled,
+    breakfastOptOutStart: breakfastWindowOverride
+      ? dateSchedule.breakfastOptOutStart
+      : helperSchedule.breakfastOptOutStart,
+    breakfastOptOutEnd: breakfastWindowOverride
+      ? dateSchedule.breakfastOptOutEnd
+      : helperSchedule.breakfastOptOutEnd,
+    lunchEnabled: lunchEnabledOverride
+      ? dateSchedule.lunchEnabled
+      : helperSchedule.lunchEnabled,
+    lunchOptOutStart: lunchWindowOverride
+      ? dateSchedule.lunchOptOutStart
+      : helperSchedule.lunchOptOutStart,
+    lunchOptOutEnd: lunchWindowOverride
+      ? dateSchedule.lunchOptOutEnd
+      : helperSchedule.lunchOptOutEnd,
+    dinnerEnabled: dinnerEnabledOverride
+      ? dateSchedule.dinnerEnabled
+      : helperSchedule.dinnerEnabled,
+    dinnerOptOutStart: dinnerWindowOverride
+      ? dateSchedule.dinnerOptOutStart
+      : helperSchedule.dinnerOptOutStart,
+    dinnerOptOutEnd: dinnerWindowOverride
+      ? dateSchedule.dinnerOptOutEnd
+      : helperSchedule.dinnerOptOutEnd,
+    // Menus never come from the helper: an exact date row is their only
+    // source, regardless of whether it overrides meal availability.
+    breakfastMenu: dateSchedule.breakfastMenu,
+    lunchMenu: dateSchedule.lunchMenu,
+    dinnerMenu: dateSchedule.dinnerMenu,
+    availabilitySource: {
+      breakfast: (breakfastEnabledOverride || breakfastWindowOverride
+        ? "day"
+        : "ongoing") as "day" | "ongoing",
+      lunch: (lunchEnabledOverride || lunchWindowOverride
+        ? "day"
+        : "ongoing") as "day" | "ongoing",
+      dinner: (dinnerEnabledOverride || dinnerWindowOverride
+        ? "day"
+        : "ongoing") as "day" | "ongoing",
     },
   };
 };
