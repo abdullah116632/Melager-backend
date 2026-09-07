@@ -860,13 +860,13 @@ export const updateMess = async (req: AuthedRequest, res: Response) => {
 };
 
 // DELETE /api/settings/mess — permanently deletes the mess and all of its
-// data (consumers, meals, deposits, expenses, notices, bazar, etc.). Only the
-// primary admin may do this, and only after re-proving their identity —
-// either their password, or a fresh Google ID token for a Google account
-// that shares this account's email. The Google path is available to every
-// account, not just Google sign-ups, mirroring googleLogin's own by-email
-// account linking — anyone who could sign in as this account via Google can
-// also use it to re-prove identity here.
+// data (consumers, meals, deposits, expenses, notices, bazar, etc.). Any
+// admin (primary or co-admin) may do this, and only after re-proving their
+// identity — either their password, or a fresh Google ID token for a Google
+// account that shares this account's email. The Google path is available to
+// every account, not just Google sign-ups, mirroring googleLogin's own
+// by-email account linking — anyone who could sign in as this account via
+// Google can also use it to re-prove identity here.
 export const deleteMess = async (req: AuthedRequest, res: Response) => {
   const userId = req.auth!.userId;
   const { password, googleIdToken, messId: messIdParam } = req.body ?? {};
@@ -886,8 +886,9 @@ export const deleteMess = async (req: AuthedRequest, res: Response) => {
     return;
   }
 
-  const access = await resolvePrimaryAdminAccess(userId, messIdParam, {
-    accessDeniedError: "Only the primary admin can delete this mess",
+  const access = await resolveMessAccess(userId, messIdParam, {
+    adminOnly: true,
+    missingMessIdError: "messId is required",
   });
   if (!access.ok) {
     res.status(access.status).json({ error: access.error });
@@ -937,6 +938,6 @@ export const deleteMess = async (req: AuthedRequest, res: Response) => {
     }
   }
 
-  await deleteMessAndAllData(access.mess.id);
+  await deleteMessAndAllData(access.messId);
   res.json({ success: true });
 };
