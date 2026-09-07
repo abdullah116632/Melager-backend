@@ -21,6 +21,11 @@ import {
 import { resolvePrimaryAdminAccess } from "../utils/primaryAdminAccessUtils.js";
 import { resolveMessAccess } from "../utils/messAccessUtils.js";
 import { deleteUserAccountPreservingAccounting } from "../utils/accountDeletionUtils.js";
+import { deleteMessAndAllData } from "../utils/messDeletionUtils.js";
+import {
+  GoogleIdTokenError,
+  verifyGoogleIdToken,
+} from "../utils/googleIdTokenUtils.js";
 import {
   clearSecurityOtp,
   getLinkedConsumer,
@@ -852,4 +857,86 @@ export const updateMess = async (req: AuthedRequest, res: Response) => {
     .set({ name: normalizedName })
     .where(eq(messesTable.id, mess.id));
   res.json({ name: normalizedName });
+};
+
+// DELETE /api/settings/mess — permanently deletes the mess and all of its
+// data (consumers, meals, deposits, expenses, notices, bazar, etc.). Only the
+// primary admin may do this, and only after re-proving their identity —
+// either their password, or a fresh Google ID token for a Google account
+// that shares this account's email. The Google path is available to every
+// account, not just Google sign-ups, mirroring googleLogin's own by-email
+// account linking — anyone who could sign in as this account via Google can
+// also use it to re-prove identity here.
+export const deleteMess = async (req: AuthedRequest, res: Response) => {
+  const userId = req.auth!.userId;
+  const { password, googleIdToken, messId: messIdParam } = req.body ?? {};
+
+  const hasPassword = typeof password === "string" && password.length > 0;
+  const hasGoogleIdToken =
+    typeof googleIdToken === "string" && googleIdToken.length > 0;
+
+  if (!hasPassword && !hasGoogleIdToken) {
+    res
+      .status(400)
+      .json({ error: "Password or Google verification is required" });
+    return;
+  }
+  if (hasPassword && password.length > 256) {
+    res.status(400).json({ error: "Password is too long" });
+    return;
+  }
+
+  const access = await resolvePrimaryAdminAccess(userId, messIdParam, {
+    accessDeniedError: "Only the primary admin can delete this mess",
+  });
+  if (!access.ok) {
+    res.status(access.status).json({ error: access.error });
+    return;
+  }
+
+  const [user] = await db
+    .select({
+      email: usersTable.email,
+      passwordHash: usersTable.passwordHash,
+      googleSubject: usersTable.googleSubject,
+    })
+    .from(usersTable)
+    .where(eq(usersTable.id, userId))
+    .limit(1);
+
+  if (!user) {
+    res.status(404).json({ error: "Account not found" });
+    return;
+  }
+
+  if (hasGoogleIdToken) {
+    try {
+      const { email: verifiedEmail } = await verifyGoogleIdToken(googleIdToken);
+      if (normalizeEmail(verifiedEmail) !== normalizeEmail(user.email)) {
+        res.status(401).json({
+          error: "That Google account doesn't match this account's email",
+        });
+        return;
+      }
+    } catch (err) {
+      if (err instanceof GoogleIdTokenError) {
+        res.status(err.status).json({ error: err.message });
+        return;
+      }
+      throw err;
+    }
+  } else {
+    const passwordMatches = await verifyPassword(password, user.passwordHash);
+    if (!passwordMatches) {
+      res.status(401).json({
+        error: user.googleSubject
+          ? "Password is incorrect. If you created this account with Google, use Forgot Password or Verify with Google instead."
+          : "Password is incorrect",
+      });
+      return;
+    }
+  }
+
+  await deleteMessAndAllData(access.mess.id);
+  res.json({ success: true });
 };

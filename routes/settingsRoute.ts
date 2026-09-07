@@ -4,6 +4,7 @@ import {
   addCoAdmin,
   changePassword,
   deleteAccount,
+  deleteMess,
   getEligibleAdmins,
   removeSelfAdmin,
   requestSecurityOtp,
@@ -38,5 +39,6 @@ router.patch("/settings/profile", requireAuth, updateProfile);
 router.patch("/settings/profile/phone", requireAuth, updatePhone);
 router.delete("/settings/account", requireAuth, deleteAccount);
 router.patch("/settings/mess", requireAuth, updateMess);
+router.delete("/settings/mess", requireAuth, deleteMess);
 
 export default router;

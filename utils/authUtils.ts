@@ -5,6 +5,7 @@ type PublicAuthUserInput = {
   email: string;
   name: string;
   mobileNumber: string | null;
+  googleSubject: string | null;
 };
 
 export const normalizeEmail = (email: string): string =>
@@ -65,4 +66,5 @@ export const toPublicAuthUser = (user: PublicAuthUserInput) => ({
   email: user.email,
   name: user.name,
   mobileNumber: user.mobileNumber,
+  hasGoogleAccount: user.googleSubject != null,
 });

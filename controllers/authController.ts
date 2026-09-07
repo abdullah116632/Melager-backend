@@ -1,5 +1,4 @@
 import type { Request, Response } from "express";
-import { OAuth2Client } from "google-auth-library";
 import { randomUUID } from "node:crypto";
 import { eq, and, inArray, sql } from "drizzle-orm";
 import {
@@ -20,7 +19,6 @@ import {
 } from "../lib/email.js";
 import {
   createOtpChallenge,
-  getConfiguredGoogleClientIds,
   isValidEmail,
   isOtpExpired,
   normalizeEmail,
@@ -33,8 +31,10 @@ import {
   verifyPassword,
 } from "../utils/passwordUtils.js";
 import { deleteUserAccountPreservingAccounting } from "../utils/accountDeletionUtils.js";
-
-const googleClient = new OAuth2Client();
+import {
+  GoogleIdTokenError,
+  verifyGoogleIdToken,
+} from "../utils/googleIdTokenUtils.js";
 
 // POST /api/auth/signup — stores pending verification, sends OTP email
 export const signup = async (req: Request, res: Response) => {
@@ -532,31 +532,15 @@ export const googleLogin = async (req: Request, res: Response) => {
     return;
   }
 
-  const audiences = getConfiguredGoogleClientIds();
-  if (audiences.length === 0) {
-    req.log.error("GOOGLE_CLIENT_IDS is not configured");
-    res.status(503).json({ error: "Google sign-in is not configured yet" });
-    return;
-  }
-
   try {
-    const ticket = await googleClient.verifyIdToken({
-      idToken,
-      audience: audiences,
-    });
-    const payload = ticket.getPayload();
-    if (!payload?.sub || !payload.email || payload.email_verified !== true) {
-      res
-        .status(401)
-        .json({ error: "Your Google account email could not be verified" });
-      return;
-    }
+    const { subject, email: rawEmail, name } =
+      await verifyGoogleIdToken(idToken);
+    const email = normalizeEmail(rawEmail);
 
-    const email = normalizeEmail(payload.email);
     let [user] = await db
       .select()
       .from(usersTable)
-      .where(eq(usersTable.googleSubject, payload.sub))
+      .where(eq(usersTable.googleSubject, subject))
       .limit(1);
 
     if (!user) {
@@ -567,10 +551,7 @@ export const googleLogin = async (req: Request, res: Response) => {
         .limit(1);
 
       if (emailUser) {
-        if (
-          emailUser.googleSubject &&
-          emailUser.googleSubject !== payload.sub
-        ) {
+        if (emailUser.googleSubject && emailUser.googleSubject !== subject) {
           res.status(409).json({
             error: "This email is already linked to another Google account",
           });
@@ -578,12 +559,11 @@ export const googleLogin = async (req: Request, res: Response) => {
         }
         [user] = await db
           .update(usersTable)
-          .set({ googleSubject: payload.sub })
+          .set({ googleSubject: subject })
           .where(eq(usersTable.id, emailUser.id))
           .returning();
       } else {
-        const fallbackName =
-          payload.name?.trim() || email.split("@")[0] || "Google User";
+        const fallbackName = name || email.split("@")[0] || "Google User";
         const passwordHash = await hashPassword(`google:${randomUUID()}`);
         [user] = await db
           .insert(usersTable)
@@ -591,7 +571,7 @@ export const googleLogin = async (req: Request, res: Response) => {
             email,
             name: fallbackName,
             passwordHash,
-            googleSubject: payload.sub,
+            googleSubject: subject,
           })
           .returning();
       }
@@ -603,6 +583,10 @@ export const googleLogin = async (req: Request, res: Response) => {
       user: toPublicAuthUser(user),
     });
   } catch (err) {
+    if (err instanceof GoogleIdTokenError) {
+      res.status(err.status).json({ error: err.message });
+      return;
+    }
     req.log.warn({ err }, "Google ID token verification failed");
     res.status(401).json({ error: "Google sign-in could not be verified" });
   }
@@ -622,6 +606,7 @@ export const me = async (req: AuthedRequest, res: Response) => {
           email: usersTable.email,
           name: usersTable.name,
           mobileNumber: usersTable.mobileNumber,
+          googleSubject: usersTable.googleSubject,
         })
         .from(usersTable)
         .where(eq(usersTable.id, userId))
@@ -674,10 +659,14 @@ export const me = async (req: AuthedRequest, res: Response) => {
       name: string;
       messKey: string;
       role: "admin" | "member";
+      // The mess creator (messesTable.adminUserId), as opposed to a co-admin
+      // granted admin via Add Co-Admin. Only the primary admin may delete
+      // the mess or transfer/revoke admin access.
+      isPrimaryAdmin: boolean;
     }
   >();
   for (const mess of adminMesses) {
-    messMap.set(mess.id, { ...mess, role: "admin" });
+    messMap.set(mess.id, { ...mess, role: "admin", isPrimaryAdmin: true });
   }
   for (const membership of memberships) {
     if (!messMap.has(membership.id)) {
@@ -686,6 +675,7 @@ export const me = async (req: AuthedRequest, res: Response) => {
         name: membership.name,
         messKey: membership.messKey,
         role: membership.isAdmin ? "admin" : "member",
+        isPrimaryAdmin: false,
       });
     }
   }
@@ -698,5 +688,15 @@ export const me = async (req: AuthedRequest, res: Response) => {
     status: request.status as "pending" | "rejected",
   }));
 
-  res.json({ user, messes, requests });
+  res.json({
+    user: {
+      id: user.id,
+      email: user.email,
+      name: user.name,
+      mobileNumber: user.mobileNumber,
+      hasGoogleAccount: user.googleSubject != null,
+    },
+    messes,
+    requests,
+  });
 };
