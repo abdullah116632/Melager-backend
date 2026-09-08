@@ -14,6 +14,7 @@ import { deliverNoticePushes } from "../lib/notificationDelivery.js";
 import type { AuthedRequest } from "../middleware/auth.js";
 import { resolveMessAccess } from "../utils/messAccessUtils.js";
 import { parsePositiveInteger } from "../utils/numberUtils.js";
+import { updatedAtMatches } from "../utils/syncVersionUtils.js";
 
 type NoticeSyncOperation =
   | "notice_create"
@@ -237,10 +238,13 @@ export const syncNoticeMutation = async (req: AuthedRequest, res: Response) => {
           );
         body = {
           notice,
+          // The author already knows about their own notice.
           recipientUserIds: [
             ...new Set(
               recipients.flatMap(({ userId: recipientId }) =>
-                recipientId == null ? [] : [recipientId],
+                recipientId == null || recipientId === userId
+                  ? []
+                  : [recipientId],
               ),
             ),
           ],
@@ -257,7 +261,7 @@ export const syncNoticeMutation = async (req: AuthedRequest, res: Response) => {
             and(
               eq(noticesTable.id, serverId),
               eq(noticesTable.messId, access.messId),
-              sql`date_trunc('milliseconds', ${noticesTable.updatedAt}) = ${baseUpdatedAt}`,
+              updatedAtMatches(noticesTable.updatedAt, baseUpdatedAt),
             ),
           )
           .returning();
@@ -289,7 +293,7 @@ export const syncNoticeMutation = async (req: AuthedRequest, res: Response) => {
             and(
               eq(noticesTable.id, serverId),
               eq(noticesTable.messId, access.messId),
-              sql`date_trunc('milliseconds', ${noticesTable.updatedAt}) = ${baseUpdatedAt}`,
+              updatedAtMatches(noticesTable.updatedAt, baseUpdatedAt),
             ),
           )
           .returning({ id: noticesTable.id });

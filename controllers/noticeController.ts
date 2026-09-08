@@ -141,10 +141,13 @@ export const createNotice = async (req: AuthedRequest, res: Response) => {
           isNull(consumersTable.accountDeletedAt),
         ),
       );
+    // The author already knows about their own notice.
     const pushRecipientUserIds = [
       ...new Set(
         recipients.flatMap((recipient) =>
-          recipient.userId == null ? [] : [recipient.userId],
+          recipient.userId == null || recipient.userId === req.auth!.userId
+            ? []
+            : [recipient.userId],
         ),
       ),
     ];

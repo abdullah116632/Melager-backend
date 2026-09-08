@@ -17,6 +17,7 @@ import { deliverBazarAssignmentPushes } from "../lib/notificationDelivery.js";
 import type { AuthedRequest } from "../middleware/auth.js";
 import { resolveMessAccess } from "../utils/messAccessUtils.js";
 import { parsePositiveInteger } from "../utils/numberUtils.js";
+import { updatedAtMatches } from "../utils/syncVersionUtils.js";
 import { emitToMess } from "../realtime/socket.js";
 
 type BazarSyncOperation =
@@ -216,7 +217,7 @@ export const syncBazarMutation = async (req: AuthedRequest, res: Response) => {
             and(
               eq(bazarItemsTable.id, serverId),
               eq(bazarItemsTable.messId, access.messId),
-              sql`date_trunc('milliseconds', ${bazarItemsTable.updatedAt}) = ${baseUpdatedAt}`,
+              updatedAtMatches(bazarItemsTable.updatedAt, baseUpdatedAt),
             ),
           )
           .returning();
@@ -252,7 +253,7 @@ export const syncBazarMutation = async (req: AuthedRequest, res: Response) => {
             and(
               eq(bazarItemsTable.id, serverId),
               eq(bazarItemsTable.messId, access.messId),
-              sql`date_trunc('milliseconds', ${bazarItemsTable.updatedAt}) = ${baseUpdatedAt}`,
+              updatedAtMatches(bazarItemsTable.updatedAt, baseUpdatedAt),
             ),
           )
           .returning();
@@ -285,7 +286,7 @@ export const syncBazarMutation = async (req: AuthedRequest, res: Response) => {
             and(
               eq(bazarItemsTable.id, serverId),
               eq(bazarItemsTable.messId, access.messId),
-              sql`date_trunc('milliseconds', ${bazarItemsTable.updatedAt}) = ${baseUpdatedAt}`,
+              updatedAtMatches(bazarItemsTable.updatedAt, baseUpdatedAt),
             ),
           )
           .returning({ id: bazarItemsTable.id });
