@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { Response } from "express";
-import { and, eq, inArray, isNull, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, ne, sql } from "drizzle-orm";
 
 import {
   bazarAssignmentNotificationsTable,
@@ -18,6 +18,10 @@ import type { AuthedRequest } from "../middleware/auth.js";
 import { resolveMessAccess } from "../utils/messAccessUtils.js";
 import { parsePositiveInteger } from "../utils/numberUtils.js";
 import { updatedAtMatches } from "../utils/syncVersionUtils.js";
+import {
+  bazarWeekdayFromDate,
+  parseBazarDate,
+} from "../utils/bazarDateUtils.js";
 import { emitToMess } from "../realtime/socket.js";
 
 type BazarSyncOperation =
@@ -50,9 +54,9 @@ const operations = new Set<BazarSyncOperation>([
   "notify_members",
 ]);
 
+// Every mess member maintains the shopping list itself. Duty assignments and
+// anything that touches the expense ledger stay with the manager.
 const adminOperations = new Set<BazarSyncOperation>([
-  "item_update",
-  "item_delete",
   "assignments_set",
   "add_to_expense",
   "notify_members",
@@ -60,6 +64,32 @@ const adminOperations = new Set<BazarSyncOperation>([
 
 const toJsonValue = (value: unknown) =>
   JSON.parse(JSON.stringify(value)) as Record<string, unknown>;
+
+const DUPLICATE_NAME_ERROR =
+  "An item with this name is already on that day's list";
+
+/** True when another item on the same day already carries this exact name. */
+const dayHasItemNamed = async (
+  tx: Parameters<Parameters<typeof db.transaction>[0]>[0],
+  messId: number,
+  bazarDate: string,
+  name: string,
+  exceptItemId?: number,
+) => {
+  const [existing] = await tx
+    .select({ id: bazarItemsTable.id })
+    .from(bazarItemsTable)
+    .where(
+      and(
+        eq(bazarItemsTable.messId, messId),
+        eq(bazarItemsTable.bazarDate, bazarDate),
+        eq(bazarItemsTable.name, name),
+        ...(exceptItemId ? [ne(bazarItemsTable.id, exceptItemId)] : []),
+      ),
+    )
+    .limit(1);
+  return Boolean(existing);
+};
 
 const readBaseUpdatedAt = (payload: Record<string, unknown>): Date => {
   const value = new Date(String(payload.baseUpdatedAt ?? ""));
@@ -105,7 +135,11 @@ export const syncBazarMutation = async (req: AuthedRequest, res: Response) => {
           messId: access.messId,
           entityType: "bazar",
           entityId: String(
-            payload.serverId ?? payload.localId ?? payload.weekday ?? operation,
+            payload.serverId ??
+              payload.localId ??
+              payload.bazarDate ??
+              payload.weekday ??
+              operation,
           ),
           operation:
             operation === "item_create"
@@ -154,14 +188,12 @@ export const syncBazarMutation = async (req: AuthedRequest, res: Response) => {
       let changeOperation: "create" | "update" | "delete" | "upsert" = "update";
 
       if (operation === "item_create") {
-        const weekday = Number(payload.weekday);
+        const bazarDate = parseBazarDate(payload.bazarDate);
         const name = String(payload.name ?? "").trim();
         const price = Number(payload.price ?? 0);
         const completed = payload.completed ?? false;
         if (
-          !Number.isInteger(weekday) ||
-          weekday < 0 ||
-          weekday > 6 ||
+          !bazarDate ||
           !name ||
           name.length > 160 ||
           !Number.isFinite(price) ||
@@ -170,11 +202,14 @@ export const syncBazarMutation = async (req: AuthedRequest, res: Response) => {
         ) {
           throw new SyncRequestError("Invalid bazar item data");
         }
+        if (await dayHasItemNamed(tx, access.messId, bazarDate, name)) {
+          throw new SyncRequestError(DUPLICATE_NAME_ERROR, 409);
+        }
         const [item] = await tx
           .insert(bazarItemsTable)
           .values({
             messId: access.messId,
-            weekday,
+            bazarDate,
             name,
             price,
             isCompleted: completed,
@@ -202,6 +237,30 @@ export const syncBazarMutation = async (req: AuthedRequest, res: Response) => {
           typeof payload.completed !== "boolean"
         ) {
           throw new SyncRequestError("Invalid bazar completion value");
+        }
+        const [target] = await tx
+          .select({ bazarDate: bazarItemsTable.bazarDate })
+          .from(bazarItemsTable)
+          .where(
+            and(
+              eq(bazarItemsTable.id, serverId),
+              eq(bazarItemsTable.messId, access.messId),
+            ),
+          )
+          .limit(1);
+        if (!target) {
+          throw new SyncRequestError("Bazar item not found", 404);
+        }
+        if (
+          await dayHasItemNamed(
+            tx,
+            access.messId,
+            target.bazarDate,
+            name,
+            serverId,
+          )
+        ) {
+          throw new SyncRequestError(DUPLICATE_NAME_ERROR, 409);
         }
         const [item] = await tx
           .update(bazarItemsTable)
@@ -279,35 +338,20 @@ export const syncBazarMutation = async (req: AuthedRequest, res: Response) => {
       } else if (operation === "item_delete") {
         const serverId = parsePositiveInteger(payload.serverId);
         if (!serverId) throw new SyncRequestError("Invalid bazar item id");
-        const baseUpdatedAt = readBaseUpdatedAt(payload);
-        const [deleted] = await tx
+        // Removing an item is intent-based, not value-based: "take this off
+        // the list" stays correct no matter who last edited its name or price.
+        // Version-checking here turned a concurrent edit into a 409, which the
+        // sync engine treats as permanent and drops, so the row lived on
+        // server-side while the device showed it gone. Deleting an already
+        // deleted row is likewise a success, not an error.
+        await tx
           .delete(bazarItemsTable)
           .where(
             and(
               eq(bazarItemsTable.id, serverId),
               eq(bazarItemsTable.messId, access.messId),
-              updatedAtMatches(bazarItemsTable.updatedAt, baseUpdatedAt),
             ),
-          )
-          .returning({ id: bazarItemsTable.id });
-        if (!deleted) {
-          const [current] = await tx
-            .select({ id: bazarItemsTable.id })
-            .from(bazarItemsTable)
-            .where(
-              and(
-                eq(bazarItemsTable.id, serverId),
-                eq(bazarItemsTable.messId, access.messId),
-              ),
-            )
-            .limit(1);
-          throw new SyncRequestError(
-            current
-              ? "Bazar item changed on another device"
-              : "Bazar item not found",
-            current ? 409 : 404,
           );
-        }
         body = { success: true, serverId };
         changeOperation = "delete";
       } else if (operation === "assignments_set") {
@@ -424,18 +468,12 @@ export const syncBazarMutation = async (req: AuthedRequest, res: Response) => {
         body = { assignments, weekday };
         changeOperation = "upsert";
       } else if (operation === "add_to_expense") {
-        const yearMonth = String(payload.yearMonth ?? "");
-        const day = Number(payload.day);
-        if (
-          !/^\d{4}-\d{2}$/.test(yearMonth) ||
-          !Number.isInteger(day) ||
-          day < 1 ||
-          day > 31
-        ) {
-          throw new SyncRequestError(
-            "Valid expense month and day are required",
-          );
+        const bazarDate = parseBazarDate(payload.bazarDate);
+        if (!bazarDate) {
+          throw new SyncRequestError("A valid bazarDate is required");
         }
+        const yearMonth = bazarDate.slice(0, 7);
+        const day = Number(bazarDate.slice(8, 10));
         await tx.execute(
           sql`SELECT pg_advisory_xact_lock(${access.messId}, ${20_000 + day})`,
         );
@@ -446,7 +484,12 @@ export const syncBazarMutation = async (req: AuthedRequest, res: Response) => {
               price: bazarItemsTable.price,
             })
             .from(bazarItemsTable)
-            .where(eq(bazarItemsTable.messId, access.messId)),
+            .where(
+              and(
+                eq(bazarItemsTable.messId, access.messId),
+                eq(bazarItemsTable.bazarDate, bazarDate),
+              ),
+            ),
           tx
             .select({ items: expenseDaysTable.items })
             .from(expenseDaysTable)
@@ -460,14 +503,22 @@ export const syncBazarMutation = async (req: AuthedRequest, res: Response) => {
             .limit(1),
         ]);
         const existingItems = existingExpense[0]?.items ?? [];
+        // Name+amount identifies an entry: the expense stores copies, so an
+        // item deleted from the bazar list stays booked and must not re-add.
         const existingKeys = new Set(
           existingItems.map((item) => `${item.name}\u0000${item.amount}`),
         );
+        const alreadyAddedItems: Array<{ name: string; amount: number }> = [];
+        const seenKeys = new Set<string>();
         const newItems = bazarItems
           .filter((item) => {
             const key = `${item.name}\u0000${item.price}`;
-            if (existingKeys.has(key)) return false;
-            existingKeys.add(key);
+            if (existingKeys.has(key)) {
+              alreadyAddedItems.push({ name: item.name, amount: item.price });
+              return false;
+            }
+            if (seenKeys.has(key)) return false;
+            seenKeys.add(key);
             return true;
           })
           .map((item) => ({
@@ -496,6 +547,7 @@ export const syncBazarMutation = async (req: AuthedRequest, res: Response) => {
         }
         body = {
           newItems,
+          alreadyAddedItems,
           alreadyAddedAll: newItems.length === 0,
           added: newItems.length > 0,
           yearMonth,
@@ -514,17 +566,18 @@ export const syncBazarMutation = async (req: AuthedRequest, res: Response) => {
           );
         body = { unreadCount: 0 };
       } else {
-        const weekday = Number(payload.weekday);
-        if (!Number.isInteger(weekday) || weekday < 0 || weekday > 6) {
-          throw new SyncRequestError("Invalid notification weekday");
+        const bazarDate = parseBazarDate(payload.bazarDate);
+        if (!bazarDate) {
+          throw new SyncRequestError("Invalid notification bazarDate");
         }
+        const weekday = bazarWeekdayFromDate(bazarDate);
         const [item] = await tx
           .select({ id: bazarItemsTable.id })
           .from(bazarItemsTable)
           .where(
             and(
               eq(bazarItemsTable.messId, access.messId),
-              eq(bazarItemsTable.weekday, weekday),
+              eq(bazarItemsTable.bazarDate, bazarDate),
             ),
           )
           .limit(1);
@@ -561,13 +614,13 @@ export const syncBazarMutation = async (req: AuthedRequest, res: Response) => {
           recipientUserIds.map((recipientId) => ({
             messId: access.messId,
             userId: recipientId,
-            weekday,
+            bazarDate,
           })),
         );
         body = {
           notifiedCount: recipientUserIds.length,
           recipientUserIds,
-          weekday,
+          bazarDate,
         };
         changeOperation = "create";
       }
@@ -578,7 +631,11 @@ export const syncBazarMutation = async (req: AuthedRequest, res: Response) => {
         actorUserId: userId,
         entityType: "bazar",
         entityId: String(
-          payload.serverId ?? payload.localId ?? payload.weekday ?? operation,
+          payload.serverId ??
+            payload.localId ??
+            payload.bazarDate ??
+            payload.weekday ??
+            operation,
         ),
         operation: changeOperation,
         payload: { operation, result: jsonBody },
@@ -596,18 +653,18 @@ export const syncBazarMutation = async (req: AuthedRequest, res: Response) => {
 
     const responseBody = outcome.body as Record<string, unknown> & {
       recipientUserIds?: number[];
-      weekday?: number;
+      bazarDate?: string;
     };
     if (
       operation === "notify_members" &&
       !outcome.replayed &&
       responseBody.recipientUserIds &&
-      responseBody.weekday !== undefined
+      responseBody.bazarDate !== undefined
     ) {
       void deliverBazarAssignmentPushes({
         recipientUserIds: responseBody.recipientUserIds,
         messId: access.messId,
-        weekday: responseBody.weekday,
+        bazarDate: responseBody.bazarDate,
       });
     }
     if (

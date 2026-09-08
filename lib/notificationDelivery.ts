@@ -8,6 +8,10 @@ import {
 } from "../db/dbConfig.js";
 import { logger } from "./logger.js";
 import { emitToUser } from "../realtime/socket.js";
+import {
+  BAZAR_WEEKDAY_NAMES,
+  bazarWeekdayFromDate,
+} from "../utils/bazarDateUtils.js";
 
 const EXPO_PUSH_URL = "https://exp.host/--/api/v2/push/send";
 
@@ -36,13 +40,13 @@ const notificationRoute = (type: string): string =>
       ? "/"
       : type === "meal_opt_out"
         ? "/meal-status"
-      : type === "notice"
-    ? "/notice-board"
-    : type === "message"
-      ? "/messages"
-      : type === "menu"
-        ? "/meal-status"
-        : "/bazar-list";
+        : type === "notice"
+          ? "/notice-board"
+          : type === "message"
+            ? "/messages"
+            : type === "menu"
+              ? "/meal-status"
+              : "/bazar-list";
 
 const deliverPushes = async (deliveries: PushDelivery[]): Promise<void> => {
   if (deliveries.length === 0) return;
@@ -237,22 +241,14 @@ export const deliverNoticePushes = async ({
 export const deliverBazarAssignmentPushes = async ({
   recipientUserIds,
   messId,
-  weekday,
+  bazarDate,
 }: {
   recipientUserIds: number[];
   messId: number;
-  weekday: number;
+  bazarDate: string;
 }): Promise<void> => {
   const weekdayName =
-    [
-      "Saturday",
-      "Sunday",
-      "Monday",
-      "Tuesday",
-      "Wednesday",
-      "Thursday",
-      "Friday",
-    ][weekday] ?? "selected day";
+    BAZAR_WEEKDAY_NAMES[bazarWeekdayFromDate(bazarDate)] ?? "the selected day";
 
   recipientUserIds.forEach((userId) => {
     emitToUser(userId, "bazar-assignment:created", { messId });
@@ -262,7 +258,7 @@ export const deliverBazarAssignmentPushes = async ({
     recipientUserIds.map((userId) => ({
       userId,
       title: "Bazar duty assigned",
-      body: `You have been assigned for ${weekdayName} bazar.`,
+      body: `You have been assigned for ${weekdayName} (${bazarDate}) bazar.`,
       channelId: "default",
       data: {
         messId,

@@ -7,7 +7,7 @@ CREATE TABLE IF NOT EXISTS "bazar_assignment_notifications" (
   "id" serial PRIMARY KEY,
   "mess_id" integer NOT NULL REFERENCES "messes"("id") ON DELETE CASCADE,
   "user_id" integer NOT NULL REFERENCES "users"("id") ON DELETE CASCADE,
-  "weekday" integer NOT NULL,
+  "bazar_date" text NOT NULL,
   "read_at" timestamp,
   "created_at" timestamp NOT NULL DEFAULT now()
 );

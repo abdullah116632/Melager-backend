@@ -1,7 +1,7 @@
 CREATE TABLE IF NOT EXISTS "bazar_items" (
   "id" serial PRIMARY KEY,
   "mess_id" integer NOT NULL REFERENCES "messes"("id"),
-  "weekday" integer NOT NULL,
+  "bazar_date" text NOT NULL,
   "name" text NOT NULL,
   "price" numeric(14, 3) NOT NULL DEFAULT 0,
   "created_by_user_id" integer NOT NULL REFERENCES "users"("id"),
@@ -9,8 +9,12 @@ CREATE TABLE IF NOT EXISTS "bazar_items" (
   "updated_at" timestamp NOT NULL DEFAULT now()
 );
 
-CREATE INDEX IF NOT EXISTS "bazar_items_mess_weekday_idx"
-ON "bazar_items" ("mess_id", "weekday");
+CREATE INDEX IF NOT EXISTS "bazar_items_mess_date_idx"
+ON "bazar_items" ("mess_id", "bazar_date");
+
+ALTER TABLE "bazar_items"
+  ADD CONSTRAINT "bazar_items_mess_date_name_uq"
+  UNIQUE ("mess_id", "bazar_date", "name");
 
 CREATE INDEX IF NOT EXISTS "bazar_items_mess_idx"
 ON "bazar_items" ("mess_id");

@@ -1,6 +1,6 @@
 import type { Response } from "express";
 import { randomUUID } from "node:crypto";
-import { and, asc, count, desc, eq, isNull } from "drizzle-orm";
+import { and, asc, count, desc, eq, gte, isNull, lte, ne } from "drizzle-orm";
 import {
   bazarAssignmentNotificationsTable,
   bazarAssignmentsTable,
@@ -13,15 +13,38 @@ import {
 import type { AuthedRequest } from "../middleware/auth.js";
 import { resolveMessAccess } from "../utils/messAccessUtils.js";
 import { parsePositiveInteger } from "../utils/numberUtils.js";
+import {
+  bazarWeekdayFromDate,
+  parseBazarDate,
+} from "../utils/bazarDateUtils.js";
+import { dateInAppTimeZone } from "../utils/dateUtils.js";
 import { deliverBazarAssignmentPushes } from "../lib/notificationDelivery.js";
 import { emitToMess } from "../realtime/socket.js";
 
 const MAX_ITEM_NAME_LENGTH = 160;
 const WEEKDAYS = new Set([0, 1, 2, 3, 4, 5, 6]);
+/** How far either side of today a client syncs bazar items by default. */
+const DEFAULT_ITEM_WINDOW_DAYS = 180;
 
+/** Weekday of a bazar duty rotation; item dates use `parseBazarDate`. */
 const parseWeekday = (value: unknown): number | null => {
   const weekday = Number(value);
   return Number.isInteger(weekday) && WEEKDAYS.has(weekday) ? weekday : null;
+};
+
+const shiftDate = (date: string, days: number): string => {
+  const [year, month, day] = date.split("-").map(Number);
+  const shifted = new Date(Date.UTC(year!, month! - 1, day! + days));
+  return dateInAppTimeZone(shifted);
+};
+
+/** Clamps an item query to a bounded date range so payloads stay small. */
+const resolveItemWindow = (from: unknown, to: unknown) => {
+  const today = dateInAppTimeZone(new Date());
+  return {
+    from: parseBazarDate(from) ?? shiftDate(today, -DEFAULT_ITEM_WINDOW_DAYS),
+    to: parseBazarDate(to) ?? shiftDate(today, DEFAULT_ITEM_WINDOW_DAYS),
+  };
 };
 
 const parsePrice = (value: unknown): number | null => {
@@ -30,6 +53,31 @@ const parsePrice = (value: unknown): number | null => {
   if (!/^\d+(?:\.\d{1,3})?$/.test(raw)) return null;
   const price = Number(raw);
   return Number.isFinite(price) ? price : null;
+};
+
+const DUPLICATE_NAME_ERROR =
+  "An item with this name is already on that day's list";
+
+/** True when another item on the same day already carries this exact name. */
+const dayHasItemNamed = async (
+  messId: number,
+  bazarDate: string,
+  name: string,
+  exceptItemId?: number,
+) => {
+  const [existing] = await db
+    .select({ id: bazarItemsTable.id })
+    .from(bazarItemsTable)
+    .where(
+      and(
+        eq(bazarItemsTable.messId, messId),
+        eq(bazarItemsTable.bazarDate, bazarDate),
+        eq(bazarItemsTable.name, name),
+        ...(exceptItemId ? [ne(bazarItemsTable.id, exceptItemId)] : []),
+      ),
+    )
+    .limit(1);
+  return Boolean(existing);
 };
 
 const readItemFields = (body: unknown) => {
@@ -56,12 +104,19 @@ export const getBazar = async (req: AuthedRequest, res: Response) => {
     return;
   }
 
+  const window = resolveItemWindow(req.query.from, req.query.to);
   const [items, assignments] = await Promise.all([
     db
       .select()
       .from(bazarItemsTable)
-      .where(eq(bazarItemsTable.messId, access.messId))
-      .orderBy(asc(bazarItemsTable.weekday), desc(bazarItemsTable.id)),
+      .where(
+        and(
+          eq(bazarItemsTable.messId, access.messId),
+          gte(bazarItemsTable.bazarDate, window.from),
+          lte(bazarItemsTable.bazarDate, window.to),
+        ),
+      )
+      .orderBy(asc(bazarItemsTable.bazarDate), desc(bazarItemsTable.id)),
     db
       .select({
         id: bazarAssignmentsTable.id,
@@ -83,18 +138,18 @@ export const getBazar = async (req: AuthedRequest, res: Response) => {
       ),
   ]);
 
-  res.json({ items, assignments });
+  res.json({ items, assignments, window });
 };
 
 export const createBazarItem = async (req: AuthedRequest, res: Response) => {
   const input = readItemFields(req.body);
-  const weekday = parseWeekday(req.body?.weekday);
-  if ("error" in input || weekday === null) {
+  const bazarDate = parseBazarDate(req.body?.bazarDate);
+  if ("error" in input || bazarDate === null) {
     res.status(400).json({
       error:
         "error" in input
           ? input.error
-          : "weekday must be an integer from 0 to 6",
+          : "bazarDate must be a calendar date in YYYY-MM-DD format",
     });
     return;
   }
@@ -104,11 +159,16 @@ export const createBazarItem = async (req: AuthedRequest, res: Response) => {
     return;
   }
 
+  if (await dayHasItemNamed(access.messId, bazarDate, input.name)) {
+    res.status(409).json({ error: DUPLICATE_NAME_ERROR });
+    return;
+  }
+
   const [item] = await db
     .insert(bazarItemsTable)
     .values({
       messId: access.messId,
-      weekday,
+      bazarDate,
       name: input.name,
       price: input.price,
       createdByUserId: req.auth!.userId,
@@ -126,11 +186,30 @@ export const updateBazarItem = async (req: AuthedRequest, res: Response) => {
     });
     return;
   }
-  const access = await resolveMessAccess(req.auth!.userId, req.body?.messId, {
-    adminOnly: true,
-  });
+  const access = await resolveMessAccess(req.auth!.userId, req.body?.messId);
   if (!access.ok) {
     res.status(access.status).json({ error: access.error });
+    return;
+  }
+
+  const [current] = await db
+    .select({ bazarDate: bazarItemsTable.bazarDate })
+    .from(bazarItemsTable)
+    .where(
+      and(
+        eq(bazarItemsTable.id, itemId),
+        eq(bazarItemsTable.messId, access.messId),
+      ),
+    )
+    .limit(1);
+  if (!current) {
+    res.status(404).json({ error: "Bazar item not found" });
+    return;
+  }
+  if (
+    await dayHasItemNamed(access.messId, current.bazarDate, input.name, itemId)
+  ) {
+    res.status(409).json({ error: DUPLICATE_NAME_ERROR });
     return;
   }
 
@@ -188,9 +267,7 @@ export const updateBazarItemStatus = async (
 
 export const deleteBazarItem = async (req: AuthedRequest, res: Response) => {
   const itemId = parsePositiveInteger(req.params.id);
-  const access = await resolveMessAccess(req.auth!.userId, req.query.messId, {
-    adminOnly: true,
-  });
+  const access = await resolveMessAccess(req.auth!.userId, req.query.messId);
   if (!itemId || !access.ok) {
     res.status(!access.ok ? access.status : 400).json({
       error: !access.ok ? access.error : "item id is required",
@@ -215,13 +292,11 @@ export const deleteBazarItem = async (req: AuthedRequest, res: Response) => {
 };
 
 export const deleteBazarItems = async (req: AuthedRequest, res: Response) => {
-  const weekday = parseWeekday(req.query.weekday);
-  const access = await resolveMessAccess(req.auth!.userId, req.query.messId, {
-    adminOnly: true,
-  });
-  if (weekday === null || !access.ok) {
+  const bazarDate = parseBazarDate(req.query.bazarDate);
+  const access = await resolveMessAccess(req.auth!.userId, req.query.messId);
+  if (bazarDate === null || !access.ok) {
     res.status(!access.ok ? access.status : 400).json({
-      error: !access.ok ? access.error : "weekday is required",
+      error: !access.ok ? access.error : "bazarDate is required",
     });
     return;
   }
@@ -231,7 +306,7 @@ export const deleteBazarItems = async (req: AuthedRequest, res: Response) => {
     .where(
       and(
         eq(bazarItemsTable.messId, access.messId),
-        eq(bazarItemsTable.weekday, weekday),
+        eq(bazarItemsTable.bazarDate, bazarDate),
       ),
     )
     .returning({ id: bazarItemsTable.id });
@@ -242,51 +317,62 @@ export const addBazarItemsToExpense = async (
   req: AuthedRequest,
   res: Response,
 ) => {
-  const { yearMonth, day, preview } = req.body ?? {};
+  const { preview } = req.body ?? {};
   const access = await resolveMessAccess(req.auth!.userId, req.body?.messId, {
     adminOnly: true,
   });
-  const parsedDay = Number(day);
   if (!access.ok) {
     res.status(access.status).json({ error: access.error });
     return;
   }
-  if (
-    !/^\d{4}-\d{2}$/.test(String(yearMonth)) ||
-    !Number.isInteger(parsedDay) ||
-    parsedDay < 1 ||
-    parsedDay > 31
-  ) {
-    res.status(400).json({ error: "valid yearMonth and day are required" });
+  // A day's shopping is booked onto that same day's expense, past or future.
+  const bazarDate = parseBazarDate(req.body?.bazarDate);
+  if (!bazarDate) {
+    res.status(400).json({ error: "a valid bazarDate is required" });
     return;
   }
+  const yearMonth = bazarDate.slice(0, 7);
+  const parsedDay = Number(bazarDate.slice(8, 10));
 
   const result = await db.transaction(async (tx) => {
     const [bazarItems, expense] = await Promise.all([
       tx
         .select({ name: bazarItemsTable.name, price: bazarItemsTable.price })
         .from(bazarItemsTable)
-        .where(eq(bazarItemsTable.messId, access.messId)),
+        .where(
+          and(
+            eq(bazarItemsTable.messId, access.messId),
+            eq(bazarItemsTable.bazarDate, bazarDate),
+          ),
+        ),
       tx
         .select({ items: expenseDaysTable.items })
         .from(expenseDaysTable)
         .where(
           and(
             eq(expenseDaysTable.messId, access.messId),
-            eq(expenseDaysTable.yearMonth, String(yearMonth)),
+            eq(expenseDaysTable.yearMonth, yearMonth),
             eq(expenseDaysTable.day, parsedDay),
           ),
         ),
     ]);
     const existingItems = expense[0]?.items ?? [];
+    // Name+amount identifies an entry: the expense stores copies, so an item
+    // deleted from the bazar list stays in the ledger and must not re-add.
     const existingKeys = new Set(
       existingItems.map((item) => `${item.name}\u0000${item.amount}`),
     );
+    const alreadyAddedItems: Array<{ name: string; amount: number }> = [];
+    const seenKeys = new Set<string>();
     const newItems = bazarItems
       .filter((item) => {
         const key = `${item.name}\u0000${item.price}`;
-        if (existingKeys.has(key)) return false;
-        existingKeys.add(key);
+        if (existingKeys.has(key)) {
+          alreadyAddedItems.push({ name: item.name, amount: item.price });
+          return false;
+        }
+        if (seenKeys.has(key)) return false;
+        seenKeys.add(key);
         return true;
       })
       .map((item) => ({
@@ -301,7 +387,7 @@ export const addBazarItemsToExpense = async (
         .insert(expenseDaysTable)
         .values({
           messId: access.messId,
-          yearMonth: String(yearMonth),
+          yearMonth: yearMonth,
           day: parsedDay,
           items: mergedItems,
         })
@@ -314,13 +400,17 @@ export const addBazarItemsToExpense = async (
           set: { items: mergedItems },
         });
     }
-    return { newItems, alreadyAddedAll: newItems.length === 0 };
+    return {
+      newItems,
+      alreadyAddedItems,
+      alreadyAddedAll: newItems.length === 0,
+    };
   });
 
   if (!preview && result.newItems.length > 0) {
     emitToMess(access.messId, "expenses:updated", {
       messId: access.messId,
-      yearMonth: String(yearMonth),
+      yearMonth: yearMonth,
     });
   }
 
@@ -473,7 +563,6 @@ export const notifyAssignedBazarMembers = async (
   req: AuthedRequest,
   res: Response,
 ) => {
-  const weekday = parseWeekday(req.body?.weekday);
   const access = await resolveMessAccess(req.auth!.userId, req.body?.messId, {
     adminOnly: true,
   });
@@ -481,10 +570,12 @@ export const notifyAssignedBazarMembers = async (
     res.status(access.status).json({ error: access.error });
     return;
   }
-  if (weekday === null) {
-    res.status(400).json({ error: "weekday is required" });
+  const bazarDate = parseBazarDate(req.body?.bazarDate);
+  if (bazarDate === null) {
+    res.status(400).json({ error: "bazarDate is required" });
     return;
   }
+  const weekday = bazarWeekdayFromDate(bazarDate);
 
   const [item] = await db
     .select({ id: bazarItemsTable.id })
@@ -492,7 +583,7 @@ export const notifyAssignedBazarMembers = async (
     .where(
       and(
         eq(bazarItemsTable.messId, access.messId),
-        eq(bazarItemsTable.weekday, weekday),
+        eq(bazarItemsTable.bazarDate, bazarDate),
       ),
     )
     .limit(1);
@@ -532,7 +623,7 @@ export const notifyAssignedBazarMembers = async (
         recipientUserIds.map((userId) => ({
           messId: access.messId,
           userId,
-          weekday,
+          bazarDate,
         })),
       )
       .returning({ userId: bazarAssignmentNotificationsTable.userId });
@@ -545,7 +636,7 @@ export const notifyAssignedBazarMembers = async (
   void deliverBazarAssignmentPushes({
     recipientUserIds: recipients.map(({ userId }) => userId),
     messId: access.messId,
-    weekday,
+    bazarDate,
   });
   res.json({ notifiedCount: recipients.length });
 };

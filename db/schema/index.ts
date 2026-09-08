@@ -361,7 +361,9 @@ export const bazarItemsTable = pgTable(
     messId: integer("mess_id")
       .notNull()
       .references(() => messesTable.id),
-    weekday: integer("weekday").notNull(),
+    // Calendar day the item belongs to (YYYY-MM-DD). Every date keeps its own
+    // list, so the same date next month starts empty instead of inheriting.
+    bazarDate: text("bazar_date").notNull(),
     name: text("name").notNull(),
     price: numeric("price", { precision: 14, scale: 3, mode: "number" })
       .notNull()
@@ -374,7 +376,10 @@ export const bazarItemsTable = pgTable(
     updatedAt: timestamp("updated_at").defaultNow().notNull(),
   },
   (t) => [
-    index("bazar_items_mess_weekday_idx").on(t.messId, t.weekday),
+    // One entry per name per day: a repeat of the same name is an edit, not a
+    // second row.
+    unique("bazar_items_mess_date_name_uq").on(t.messId, t.bazarDate, t.name),
+    index("bazar_items_mess_date_idx").on(t.messId, t.bazarDate),
     index("bazar_items_mess_idx").on(t.messId),
   ],
 );
@@ -417,7 +422,7 @@ export const bazarAssignmentNotificationsTable = pgTable(
     userId: integer("user_id")
       .notNull()
       .references(() => usersTable.id, { onDelete: "cascade" }),
-    weekday: integer("weekday").notNull(),
+    bazarDate: text("bazar_date").notNull(),
     readAt: timestamp("read_at"),
     createdAt: timestamp("created_at").defaultNow().notNull(),
   },
