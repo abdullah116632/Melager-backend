@@ -4,7 +4,6 @@ import { isOtpExpired, normalizeOtp } from "./authUtils.js";
 import { parsePositiveInteger } from "./numberUtils.js";
 
 export const SECURITY_ACTIONS = [
-  "change_password",
   "update_email",
   "add_admin",
   "add_co_admin",

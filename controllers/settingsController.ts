@@ -39,7 +39,7 @@ import {
 // POST /api/settings/security/request-otp
 export const requestSecurityOtp = async (req: AuthedRequest, res: Response) => {
   const userId = req.auth!.userId;
-  const { action, currentPassword, newPassword, payload } = req.body ?? {};
+  const { action, payload } = req.body ?? {};
 
   if (!isSecurityAction(action)) {
     res.status(400).json({ error: "Invalid action" });
@@ -58,26 +58,6 @@ export const requestSecurityOtp = async (req: AuthedRequest, res: Response) => {
   }
 
   let storedPayload: string | null = payload ? String(payload) : null;
-
-  if (act === "change_password") {
-    if (!currentPassword) {
-      res.status(400).json({ error: "Current password is required" });
-      return;
-    }
-    const valid = await verifyPassword(
-      currentPassword as string,
-      user.passwordHash,
-    );
-    if (!valid) {
-      res.status(401).json({ error: "Current password is incorrect" });
-      return;
-    }
-    if (!isPasswordValid(String(newPassword ?? ""))) {
-      res.status(400).json({ error: "Password must be at least 6 characters" });
-      return;
-    }
-    storedPayload = await hashPassword(newPassword as string);
-  }
 
   if (act === "update_email") {
     if (!payload) {
@@ -266,40 +246,41 @@ export const resendSecurityOtp = async (req: AuthedRequest, res: Response) => {
 // POST /api/settings/security/change-password
 export const changePassword = async (req: AuthedRequest, res: Response) => {
   const userId = req.auth!.userId;
-  const { otp, newPassword } = req.body ?? {};
+  const { currentPassword, newPassword } = req.body ?? {};
 
-  if (!otp) {
-    res.status(400).json({ error: "otp is required" });
+  if (!currentPassword) {
+    res.status(400).json({ error: "Current password is required" });
     return;
   }
-  if (newPassword && !isPasswordValid(newPassword as string)) {
+  if (!isPasswordValid(String(newPassword ?? ""))) {
     res.status(400).json({ error: "Password must be at least 6 characters" });
     return;
   }
 
-  const result = await verifyPendingSecurityOtp(
-    userId,
-    "change_password",
-    otp as string,
+  const [user] = await db
+    .select({ passwordHash: usersTable.passwordHash })
+    .from(usersTable)
+    .where(eq(usersTable.id, userId))
+    .limit(1);
+  if (!user) {
+    res.status(404).json({ error: "User not found" });
+    return;
+  }
+
+  const valid = await verifyPassword(
+    currentPassword as string,
+    user.passwordHash,
   );
-  if (result.error) {
-    res.status(result.expired ? 410 : 401).json({ error: result.error });
+  if (!valid) {
+    res.status(401).json({ error: "Current password is incorrect" });
     return;
   }
 
-  if (!result.pending!.payload && !newPassword) {
-    res.status(400).json({ error: "Please start the password change again" });
-    return;
-  }
-
-  const passwordHash = result.pending!.payload
-    ? result.pending!.payload
-    : await hashPassword(newPassword as string);
+  const passwordHash = await hashPassword(newPassword as string);
   await db
     .update(usersTable)
     .set({ passwordHash })
     .where(eq(usersTable.id, userId));
-  await clearSecurityOtp(userId, "change_password");
 
   res.json({ message: "Password changed successfully" });
 };

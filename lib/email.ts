@@ -87,7 +87,6 @@ export async function sendAccountDeletionOtpEmail(
 }
 
 type SecurityAction =
-  | "change_password"
   | "update_email"
   | "add_admin"
   | "add_co_admin"
@@ -97,13 +96,6 @@ const actionMeta: Record<
   SecurityAction,
   { subject: string; heading: string; body: string; accent: string; bg: string }
 > = {
-  change_password: {
-    subject: "verification code — change your password",
-    heading: "Change Password Request",
-    body: "Someone (hopefully you) requested a password change on your Melager account. Use the code below to confirm:",
-    accent: "#2563EB",
-    bg: "#EFF6FF",
-  },
   update_email: {
     subject: "verification code — update your email",
     heading: "Email Change Request",
