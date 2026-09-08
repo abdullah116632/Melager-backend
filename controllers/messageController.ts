@@ -26,6 +26,7 @@ import { resolveMessAccess } from "../utils/messAccessUtils.js";
 import { parsePositiveInteger } from "../utils/numberUtils.js";
 import { deliverMessagePushes } from "../lib/notificationDelivery.js";
 import { emitToMess, isUserViewingConversation } from "../realtime/socket.js";
+import { loadMessageReactions } from "./messageReactionController.js";
 
 const DEFAULT_MESSAGE_LIMIT = 30;
 const MAX_MESSAGE_LIMIT = 50;
@@ -78,8 +79,14 @@ export const getMessages = async (req: AuthedRequest, res: Response) => {
       )
       .orderBy(asc(messagesTable.id))
       .limit(MAX_MESSAGE_LIMIT);
+    const reactions = await loadMessageReactions(
+      messages.map((message) => message.id),
+    );
     res.json({
-      messages,
+      messages: messages.map((message) => ({
+        ...message,
+        reactions: reactions.get(message.id) ?? [],
+      })),
       nextSyncCursor: messages.at(-1)?.id ?? afterId,
     });
     return;
@@ -131,8 +138,14 @@ export const getMessages = async (req: AuthedRequest, res: Response) => {
   const hasMore = rows.length > limit;
   const messages = hasMore ? rows.slice(0, limit) : rows;
   const last = messages[messages.length - 1];
+  const reactions = await loadMessageReactions(
+    messages.map((message) => message.id),
+  );
   res.json({
-    messages,
+    messages: messages.map((message) => ({
+      ...message,
+      reactions: reactions.get(message.id) ?? [],
+    })),
     nextCursor:
       hasMore && last ? { createdAt: last.createdAt, id: last.id } : null,
   });

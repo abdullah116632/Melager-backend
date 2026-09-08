@@ -296,6 +296,42 @@ export const messagesTable = pgTable(
   ],
 );
 
+export const MESSAGE_REACTIONS = [
+  "like",
+  "dislike",
+  "love",
+  "haha",
+  "sad",
+  "angry",
+] as const;
+
+export type MessageReactionKind = (typeof MESSAGE_REACTIONS)[number];
+
+export const messageReactionsTable = pgTable(
+  "message_reactions",
+  {
+    id: serial("id").primaryKey(),
+    messageId: integer("message_id")
+      .notNull()
+      .references(() => messagesTable.id, { onDelete: "cascade" }),
+    userId: integer("user_id")
+      .notNull()
+      .references(() => usersTable.id, { onDelete: "cascade" }),
+    reaction: text("reaction").notNull(),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  },
+  (t) => [
+    // One reaction per user per message; changing it replaces the old one.
+    unique("message_reactions_message_user_uq").on(t.messageId, t.userId),
+    index("message_reactions_message_idx").on(t.messageId),
+    check(
+      "message_reactions_reaction_check",
+      sql`${t.reaction} in ('like', 'dislike', 'love', 'haha', 'sad', 'angry')`,
+    ),
+  ],
+);
+
 export const messageReadStatesTable = pgTable(
   "message_read_states",
   {
