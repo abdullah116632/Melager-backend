@@ -2,13 +2,18 @@ import type { Response } from "express";
 import { eq, and, gte, lt } from "drizzle-orm";
 import { db, consumersTable, depositEntriesTable } from "../db/dbConfig.js";
 import type { AuthedRequest } from "../middleware/auth.js";
+import {
+  dateInAppTimeZone,
+  getBufferedMonthBounds,
+} from "../utils/dateUtils.js";
 import { toDepositEntryResponse } from "../utils/depositEntryUtils.js";
 import { resolveMessAccess } from "../utils/messAccessUtils.js";
 import { parsePositiveInteger } from "../utils/numberUtils.js";
 import { emitToMess } from "../realtime/socket.js";
 
+// A deposit belongs to its app-time-zone calendar month, not the server's.
 const getYearMonth = (date: Date): string =>
-  `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
+  dateInAppTimeZone(date).slice(0, 7);
 
 // POST /api/mess/deposit-entry — admin adds a deposit for a consumer
 export const addDepositEntry = async (req: AuthedRequest, res: Response) => {
@@ -104,9 +109,10 @@ export const getDepositEntries = async (req: AuthedRequest, res: Response) => {
     return;
   }
 
-  const [year, month] = yearMonth.split("-").map(Number);
-  const startDate = new Date(year, month - 1, 1);
-  const endDate = new Date(year, month, 1);
+  // Same month rule as GET /mess/data: read a one-day buffer on each side and
+  // keep rows whose app-time-zone date is in the month. Server-local bounds
+  // dropped deposits made just after midnight on the 1st (Dhaka) entirely.
+  const { startDate, endDate } = getBufferedMonthBounds(yearMonth);
 
   const entries = await db
     .select()
@@ -119,7 +125,11 @@ export const getDepositEntries = async (req: AuthedRequest, res: Response) => {
       ),
     );
 
-  res.json({ entries: entries.map(toDepositEntryResponse) });
+  res.json({
+    entries: entries
+      .filter((entry) => getYearMonth(entry.depositedAt) === yearMonth)
+      .map(toDepositEntryResponse),
+  });
 };
 
 // PATCH /api/mess/deposit-entry/:id — admin updates an existing deposit

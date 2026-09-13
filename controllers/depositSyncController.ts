@@ -9,6 +9,7 @@ import {
   syncClientMutationsTable,
 } from "../db/dbConfig.js";
 import type { AuthedRequest } from "../middleware/auth.js";
+import { dateInAppTimeZone } from "../utils/dateUtils.js";
 import { toDepositEntryResponse } from "../utils/depositEntryUtils.js";
 import { resolveMessAccess } from "../utils/messAccessUtils.js";
 import { parsePositiveInteger } from "../utils/numberUtils.js";
@@ -20,8 +21,9 @@ const syncError = (message: string, status: number) =>
 const normalizedNote = (value: unknown): string | null =>
   String(value ?? "").trim() || null;
 
+// A deposit belongs to its app-time-zone calendar month, not the server's.
 const getYearMonth = (date: Date): string =>
-  `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
+  dateInAppTimeZone(date).slice(0, 7);
 
 export const syncDepositMutation = async (
   req: AuthedRequest,
