@@ -823,7 +823,10 @@ export const deleteAccount = async (req: AuthedRequest, res: Response) => {
   res.json({ success: true });
 };
 
-// PATCH /api/settings/mess — update mess name (admin only)
+// PATCH /api/settings/mess — update mess name. Any admin of the mess may do
+// this, primary or co-admin: the app has always offered the rename control to
+// everyone with the admin role, and a co-admin can already do strictly more
+// destructive things here (delete the mess, hand over the admin role).
 export const updateMess = async (req: AuthedRequest, res: Response) => {
   const userId = req.auth!.userId;
   const { name, messId: messIdParam } = req.body ?? {};
@@ -836,18 +839,18 @@ export const updateMess = async (req: AuthedRequest, res: Response) => {
     res.status(400).json({ error: "Mess name is too long" });
     return;
   }
-  const access = await resolvePrimaryAdminAccess(userId, messIdParam, {
-    accessDeniedError: "Only the primary admin can update the mess name",
+  const access = await resolveMessAccess(userId, messIdParam, {
+    adminOnly: true,
+    missingMessIdError: "messId is required",
   });
   if (!access.ok) {
     res.status(access.status).json({ error: access.error });
     return;
   }
-  const { mess } = access;
   await db
     .update(messesTable)
     .set({ name: normalizedName })
-    .where(eq(messesTable.id, mess.id));
+    .where(eq(messesTable.id, access.messId));
   res.json({ name: normalizedName });
 };
 

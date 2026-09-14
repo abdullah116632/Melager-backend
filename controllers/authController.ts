@@ -702,8 +702,12 @@ export const me = async (req: AuthedRequest, res: Response) => {
       messKey: string;
       role: "admin" | "member";
       // The mess creator (messesTable.adminUserId), as opposed to a co-admin
-      // granted admin via Add Co-Admin. Only the primary admin may delete
-      // the mess or transfer/revoke admin access.
+      // granted admin via Add Co-Admin. Informational only: under v2 every
+      // manager action — renaming or deleting the mess, adding a co-admin,
+      // transferring the role, stepping down — is open to any admin, so
+      // permission checks belong on `role`. Being primary still decides the
+      // "Primary Manager" badge, and the legacy v1 /settings/security/*
+      // endpoints kept for older app builds are still primary-only.
       isPrimaryAdmin: boolean;
     }
   >();

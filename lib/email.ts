@@ -8,6 +8,31 @@ function getResend(): Resend {
 
 const FROM = process.env.RESEND_FROM_EMAIL ?? "Melager <onboarding@resend.dev>";
 
+const HTML_ENTITIES: Record<string, string> = {
+  "&": "&amp;",
+  "<": "&lt;",
+  ">": "&gt;",
+  '"': "&quot;",
+  "'": "&#39;",
+};
+
+/**
+ * Escapes a value before it is interpolated into an email's HTML body.
+ *
+ * Member names, mess names and the address a manager types into "invite"
+ * reach these templates verbatim. Without this, anyone could sign up or
+ * create a mess whose name is markup and have it rendered inside a mail sent
+ * from the app's own verified sending domain — a ready-made phishing page
+ * delivered with the app's reputation behind it.
+ *
+ * Apply it to the HTML body only. Subject lines are plain-text headers, so
+ * escaping them would show a real "Karim & Sons" as "Karim &amp; Sons" in the
+ * inbox; they need no escaping because Resend is a JSON API, which leaves no
+ * room for the CRLF header injection that raw SMTP would allow.
+ */
+const escapeHtml = (value: string): string =>
+  value.replace(/[&<>"']/g, (char) => HTML_ENTITIES[char] ?? char);
+
 export async function sendOtpEmail(
   to: string,
   name: string,
@@ -21,7 +46,7 @@ export async function sendOtpEmail(
     html: `
       <div style="font-family:sans-serif;max-width:480px;margin:0 auto;padding:32px 24px;">
         <h2 style="color:#0F766E;margin-bottom:8px;">Verify your email</h2>
-        <p style="color:#374151;">Hi <strong>${name}</strong>,</p>
+        <p style="color:#374151;">Hi <strong>${escapeHtml(name)}</strong>,</p>
         <p style="color:#374151;">Enter the code below in the Melager app to verify your email address:</p>
         <div style="font-size:40px;font-weight:700;letter-spacing:12px;text-align:center;
                     padding:24px;background:#F0FDFA;border:2px solid #14B8A6;
@@ -47,7 +72,7 @@ export async function sendPasswordResetEmail(
     html: `
       <div style="font-family:sans-serif;max-width:480px;margin:0 auto;padding:32px 24px;">
         <h2 style="color:#0F766E;margin-bottom:8px;">Reset your password</h2>
-        <p style="color:#374151;">Hi <strong>${name}</strong>,</p>
+        <p style="color:#374151;">Hi <strong>${escapeHtml(name)}</strong>,</p>
         <p style="color:#374151;">Use the code below to reset your Melager password:</p>
         <div style="font-size:40px;font-weight:700;letter-spacing:12px;text-align:center;
                     padding:24px;background:#FFF7ED;border:2px solid #F97316;
@@ -73,7 +98,7 @@ export async function sendAccountDeletionOtpEmail(
     html: `
       <div style="font-family:sans-serif;max-width:480px;margin:0 auto;padding:32px 24px;">
         <h2 style="color:#DC2626;margin-bottom:8px;">Delete your Melager account</h2>
-        <p style="color:#374151;">Hi <strong>${name}</strong>,</p>
+        <p style="color:#374151;">Hi <strong>${escapeHtml(name)}</strong>,</p>
         <p style="color:#374151;">Use the verification code below to permanently delete your Melager account:</p>
         <div style="font-size:40px;font-weight:700;letter-spacing:12px;text-align:center;
                     padding:24px;background:#FEF2F2;border:2px solid #DC2626;
@@ -87,10 +112,7 @@ export async function sendAccountDeletionOtpEmail(
 }
 
 type SecurityAction =
-  | "update_email"
-  | "add_admin"
-  | "add_co_admin"
-  | "remove_self_admin";
+  "update_email" | "add_admin" | "add_co_admin" | "remove_self_admin";
 
 const actionMeta: Record<
   SecurityAction,
@@ -141,7 +163,7 @@ export async function sendSecurityOtpEmail(
     html: `
       <div style="font-family:sans-serif;max-width:480px;margin:0 auto;padding:32px 24px;">
         <h2 style="color:${meta.accent};margin-bottom:8px;">${meta.heading}</h2>
-        <p style="color:#374151;">Hi <strong>${name}</strong>,</p>
+        <p style="color:#374151;">Hi <strong>${escapeHtml(name)}</strong>,</p>
         <p style="color:#374151;">${meta.body}</p>
         <div style="font-size:40px;font-weight:700;letter-spacing:12px;text-align:center;
                     padding:24px;background:${meta.bg};border:2px solid ${meta.accent};
@@ -169,7 +191,7 @@ export async function sendInviteEmail(
       <div style="font-family:sans-serif;max-width:480px;margin:0 auto;padding:32px 24px;">
         <h2 style="color:#0F766E;margin-bottom:8px;">You're invited!</h2>
         <p style="color:#374151;">Hi there,</p>
-        <p style="color:#374151;"><strong>${inviterName}</strong> has invited you to join <strong>${messName}</strong> on Melager.</p>
+        <p style="color:#374151;"><strong>${escapeHtml(inviterName)}</strong> has invited you to join <strong>${escapeHtml(messName)}</strong> on Melager.</p>
         <p style="color:#374151;">Download the app and use the key below to join:</p>
         <div style="font-size:32px;font-weight:700;letter-spacing:10px;text-align:center;
                     padding:24px;background:#F0FDFA;border:2px solid #14B8A6;
@@ -197,8 +219,8 @@ export async function sendExistingMemberAddedEmail(
     html: `
       <div style="font-family:sans-serif;max-width:480px;margin:0 auto;padding:32px 24px;">
         <h2 style="color:#0F766E;margin-bottom:8px;">You've been added to a mess</h2>
-        <p style="color:#374151;">Hi <strong>${name}</strong>,</p>
-        <p style="color:#374151;">You have been added as a member of <strong>${messName}</strong> on Melager.</p>
+        <p style="color:#374151;">Hi <strong>${escapeHtml(name)}</strong>,</p>
+        <p style="color:#374151;">You have been added as a member of <strong>${escapeHtml(messName)}</strong> on Melager.</p>
         <p style="color:#374151;">You can open the app and select this mess right away. Its mess key is included below for your reference:</p>
         <div style="font-size:32px;font-weight:700;letter-spacing:10px;text-align:center;
                     padding:24px;background:#F0FDFA;border:2px solid #14B8A6;
@@ -259,10 +281,10 @@ export async function sendMonthlySummaryEmail(
     subject: `Your mess summary for ${monthLabel} — ${messName}`,
     html: `
       <div style="font-family:sans-serif;max-width:520px;margin:0 auto;padding:32px 24px;">
-        <h2 style="color:#0F766E;margin-bottom:4px;">${messName}</h2>
+        <h2 style="color:#0F766E;margin-bottom:4px;">${escapeHtml(messName)}</h2>
         <p style="color:#6B7280;margin-top:0;margin-bottom:24px;">Monthly summary for <strong>${monthLabel}</strong></p>
 
-        <p style="color:#374151;">Hi <strong>${name}</strong>, here's your breakdown for ${monthLabel}:</p>
+        <p style="color:#374151;">Hi <strong>${escapeHtml(name)}</strong>, here's your breakdown for ${monthLabel}:</p>
 
         <!-- Per-consumer breakdown -->
         <table style="width:100%;border-collapse:collapse;margin:24px 0;border-radius:10px;overflow:hidden;">
@@ -332,11 +354,11 @@ export async function sendWelcomeEmail(
     subject: `You've been added to ${messName} on Melager`,
     html: `
       <div style="font-family:sans-serif;max-width:480px;margin:0 auto;padding:32px 24px;">
-        <h2 style="color:#0F766E;margin-bottom:8px;">Welcome to ${messName}!</h2>
-        <p style="color:#374151;">Hi <strong>${name}</strong>,</p>
-        <p style="color:#374151;">You've been added to <strong>${messName}</strong> on Melager. Use the credentials below to log in:</p>
+        <h2 style="color:#0F766E;margin-bottom:8px;">Welcome to ${escapeHtml(messName)}!</h2>
+        <p style="color:#374151;">Hi <strong>${escapeHtml(name)}</strong>,</p>
+        <p style="color:#374151;">You've been added to <strong>${escapeHtml(messName)}</strong> on Melager. Use the credentials below to log in:</p>
         <div style="background:#F9FAFB;border:1px solid #E5E7EB;border-radius:10px;padding:20px;margin:24px 0;">
-          <p style="margin:0 0 10px;color:#374151;"><strong>Email:</strong> ${to}</p>
+          <p style="margin:0 0 10px;color:#374151;"><strong>Email:</strong> ${escapeHtml(to)}</p>
           <p style="margin:0;color:#374151;"><strong>Password:</strong> <code style="background:#F3F4F6;padding:2px 6px;border-radius:4px;">${password}</code></p>
         </div>
         <p style="color:#DC2626;font-size:14px;">For security, please change your password after your first login.</p>
