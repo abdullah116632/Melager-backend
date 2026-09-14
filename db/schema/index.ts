@@ -125,6 +125,9 @@ export const passwordResetsTable = pgTable("password_resets", {
   id: serial("id").primaryKey(),
   email: text("email").notNull().unique(),
   otp: text("otp").notNull(),
+  // Wrong guesses so far. A six-digit code is only as strong as the number of
+  // tries it allows, so the challenge is destroyed once this runs out.
+  attempts: integer("attempts").notNull().default(0),
   expiresAt: timestamp("expires_at").notNull(),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
@@ -149,6 +152,7 @@ export const otpVerificationsTable = pgTable("otp_verifications", {
   passwordHash: text("password_hash").notNull(),
   mobileNumber: text("mobile_number"),
   otp: text("otp").notNull(),
+  attempts: integer("attempts").notNull().default(0),
   expiresAt: timestamp("expires_at").notNull(),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
@@ -162,6 +166,7 @@ export const securityOtpsTable = pgTable(
       .references(() => usersTable.id),
     action: text("action").notNull(),
     otp: text("otp").notNull(),
+    attempts: integer("attempts").notNull().default(0),
     payload: text("payload"),
     expiresAt: timestamp("expires_at").notNull(),
     createdAt: timestamp("created_at").defaultNow().notNull(),

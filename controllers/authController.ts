@@ -1,6 +1,6 @@
 import type { Request, Response } from "express";
 import { randomUUID } from "node:crypto";
-import { eq, and, inArray, sql } from "drizzle-orm";
+import { eq, and, inArray } from "drizzle-orm";
 import {
   db,
   usersTable,
@@ -22,9 +22,15 @@ import {
   isValidEmail,
   isOtpExpired,
   normalizeEmail,
-  normalizeOtp,
+  otpMatches,
   toPublicAuthUser,
 } from "../utils/authUtils.js";
+import {
+  OTP_ATTEMPTS_EXHAUSTED_ERROR,
+  OTP_COOLDOWN_ERROR,
+  isWithinOtpCooldown,
+  registerFailedOtpAttempt,
+} from "../utils/otpAttemptUtils.js";
 import {
   hashPassword,
   isPasswordValid,
@@ -134,8 +140,16 @@ export const verifyOtp = async (req: Request, res: Response) => {
     res.status(410).json({ error: "Code expired. Please sign up again." });
     return;
   }
-  if (pending.otp !== normalizeOtp(otp as string)) {
-    res.status(401).json({ error: "Incorrect code. Please try again." });
+  if (!otpMatches(pending.otp, otp)) {
+    const { exhausted } = await registerFailedOtpAttempt(
+      otpVerificationsTable,
+      eq(otpVerificationsTable.email, normalizedEmail),
+    );
+    res.status(exhausted ? 429 : 401).json({
+      error: exhausted
+        ? OTP_ATTEMPTS_EXHAUSTED_ERROR
+        : "Incorrect code. Please try again.",
+    });
     return;
   }
 
@@ -183,12 +197,18 @@ export const resendOtp = async (req: Request, res: Response) => {
       .json({ error: "No pending verification. Please sign up first." });
     return;
   }
+  if (isWithinOtpCooldown(pending.createdAt)) {
+    res.status(429).json({ error: OTP_COOLDOWN_ERROR });
+    return;
+  }
 
   const { otp, expiresAt } = createOtpChallenge();
 
+  // A new code earns a fresh attempt budget, and `createdAt` becomes the start
+  // of the next cooldown so resends cannot be chained to refill that budget.
   await db
     .update(otpVerificationsTable)
-    .set({ otp, expiresAt })
+    .set({ otp, expiresAt, attempts: 0, createdAt: new Date() })
     .where(eq(otpVerificationsTable.email, normalizedEmail));
 
   try {
@@ -215,14 +235,27 @@ export const forgotPassword = async (req: Request, res: Response) => {
   }
   const normalizedEmail = normalizeEmail(email);
 
-  const [user] = await db
-    .select({ id: usersTable.id, name: usersTable.name })
-    .from(usersTable)
-    .where(eq(usersTable.email, normalizedEmail))
-    .limit(1);
+  const [[user], [existingChallenge]] = await Promise.all([
+    db
+      .select({ id: usersTable.id, name: usersTable.name })
+      .from(usersTable)
+      .where(eq(usersTable.email, normalizedEmail))
+      .limit(1),
+    db
+      .select({ createdAt: passwordResetsTable.createdAt })
+      .from(passwordResetsTable)
+      .where(eq(passwordResetsTable.email, normalizedEmail))
+      .limit(1),
+  ]);
 
   if (!user) {
     res.status(404).json({ error: "No account found with this email address" });
+    return;
+  }
+  // Without this, the five-guess limit below could be refilled simply by
+  // asking for another code, which would put brute force back on the table.
+  if (isWithinOtpCooldown(existingChallenge?.createdAt)) {
+    res.status(429).json({ error: OTP_COOLDOWN_ERROR });
     return;
   }
 
@@ -269,6 +302,10 @@ export const resendResetOtp = async (req: Request, res: Response) => {
       .json({ error: "No pending reset. Please request a new code." });
     return;
   }
+  if (isWithinOtpCooldown(pending.createdAt)) {
+    res.status(429).json({ error: OTP_COOLDOWN_ERROR });
+    return;
+  }
 
   const [user] = await db
     .select({ name: usersTable.name })
@@ -280,7 +317,7 @@ export const resendResetOtp = async (req: Request, res: Response) => {
 
   await db
     .update(passwordResetsTable)
-    .set({ otp, expiresAt })
+    .set({ otp, expiresAt, attempts: 0, createdAt: new Date() })
     .where(eq(passwordResetsTable.email, normalizedEmail));
 
   try {
@@ -326,8 +363,16 @@ export const resetPassword = async (req: Request, res: Response) => {
     res.status(410).json({ error: "Code expired. Please request a new one." });
     return;
   }
-  if (pending.otp !== normalizeOtp(otp as string)) {
-    res.status(401).json({ error: "Incorrect code. Please try again." });
+  if (!otpMatches(pending.otp, otp)) {
+    const { exhausted } = await registerFailedOtpAttempt(
+      passwordResetsTable,
+      eq(passwordResetsTable.email, normalizedEmail),
+    );
+    res.status(exhausted ? 429 : 401).json({
+      error: exhausted
+        ? OTP_ATTEMPTS_EXHAUSTED_ERROR
+        : "Incorrect code. Please try again.",
+    });
     return;
   }
 
@@ -431,7 +476,6 @@ export const confirmAccountDeletionOtp = async (
   }
 
   const normalizedEmail = normalizeEmail(email);
-  const normalizedOtp = normalizeOtp(otp);
   const [[user], [pending]] = await Promise.all([
     db
       .select({ id: usersTable.id })
@@ -456,21 +500,16 @@ export const confirmAccountDeletionOtp = async (
     res.status(410).json({ error: "Code expired. Please request a new one." });
     return;
   }
-  if (!/^\d{6}$/.test(normalizedOtp) || pending.otp !== normalizedOtp) {
-    if (pending.attempts >= 4) {
-      await db
-        .delete(accountDeletionOtpsTable)
-        .where(eq(accountDeletionOtpsTable.email, normalizedEmail));
-      res.status(429).json({
-        error: "Too many incorrect attempts. Please request a new code.",
-      });
-      return;
-    }
-    await db
-      .update(accountDeletionOtpsTable)
-      .set({ attempts: sql`${accountDeletionOtpsTable.attempts} + 1` })
-      .where(eq(accountDeletionOtpsTable.email, normalizedEmail));
-    res.status(401).json({ error: "Incorrect code. Please try again." });
+  if (!otpMatches(pending.otp, otp)) {
+    const { exhausted } = await registerFailedOtpAttempt(
+      accountDeletionOtpsTable,
+      eq(accountDeletionOtpsTable.email, normalizedEmail),
+    );
+    res.status(exhausted ? 429 : 401).json({
+      error: exhausted
+        ? OTP_ATTEMPTS_EXHAUSTED_ERROR
+        : "Incorrect code. Please try again.",
+    });
     return;
   }
 
@@ -533,8 +572,11 @@ export const googleLogin = async (req: Request, res: Response) => {
   }
 
   try {
-    const { subject, email: rawEmail, name } =
-      await verifyGoogleIdToken(idToken);
+    const {
+      subject,
+      email: rawEmail,
+      name,
+    } = await verifyGoogleIdToken(idToken);
     const email = normalizeEmail(rawEmail);
 
     let [user] = await db

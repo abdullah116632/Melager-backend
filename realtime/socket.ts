@@ -4,10 +4,8 @@ import { Server, type Socket } from "socket.io";
 
 import { getMessContext } from "../lib/mess-access.js";
 import { logger } from "../lib/logger.js";
+import { SESSION_SECRET } from "../lib/sessionSecret.js";
 import type { AuthPayload } from "../middleware/auth.js";
-
-const SESSION_SECRET =
-  process.env.SESSION_SECRET ?? "dev-secret-please-set-session-secret";
 
 type RealtimeSocket = Socket<
   {

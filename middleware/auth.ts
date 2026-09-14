@@ -1,8 +1,7 @@
 import { Request, Response, NextFunction } from "express";
 import jwt from "jsonwebtoken";
 
-const SECRET =
-  process.env.SESSION_SECRET ?? "dev-secret-please-set-session-secret";
+import { SESSION_SECRET } from "../lib/sessionSecret.js";
 
 export interface AuthPayload {
   userId: number;
@@ -13,7 +12,9 @@ export interface AuthedRequest extends Request {
 }
 
 export function signToken(userId: number): string {
-  return jwt.sign({ userId } as AuthPayload, SECRET, { expiresIn: "30d" });
+  return jwt.sign({ userId } as AuthPayload, SESSION_SECRET, {
+    expiresIn: "30d",
+  });
 }
 
 export function requireAuth(
@@ -27,7 +28,7 @@ export function requireAuth(
     return;
   }
   try {
-    const payload = jwt.verify(header.slice(7), SECRET) as AuthPayload;
+    const payload = jwt.verify(header.slice(7), SESSION_SECRET) as AuthPayload;
     req.auth = { userId: payload.userId };
     next();
   } catch {

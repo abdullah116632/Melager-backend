@@ -1,6 +1,10 @@
 import { and, eq } from "drizzle-orm";
 import { consumersTable, db, securityOtpsTable } from "../db/dbConfig.js";
-import { isOtpExpired, normalizeOtp } from "./authUtils.js";
+import { isOtpExpired, otpMatches } from "./authUtils.js";
+import {
+  OTP_ATTEMPTS_EXHAUSTED_ERROR,
+  registerFailedOtpAttempt,
+} from "./otpAttemptUtils.js";
 import { parsePositiveInteger } from "./numberUtils.js";
 
 export const SECURITY_ACTIONS = [
@@ -29,33 +33,46 @@ export const clearSecurityOtp = async (
     );
 };
 
+/**
+ * Checks one security OTP and reports the HTTP status a caller should answer
+ * with. `status` is authoritative: a burned challenge answers 429, an expired
+ * one 410, anything else wrong 401.
+ */
 export const verifyPendingSecurityOtp = async (
   userId: number,
   action: SecurityAction,
   otpInput: string,
 ) => {
+  const challengeMatches = and(
+    eq(securityOtpsTable.userId, userId),
+    eq(securityOtpsTable.action, action),
+  )!;
   const [pending] = await db
     .select()
     .from(securityOtpsTable)
-    .where(
-      and(
-        eq(securityOtpsTable.userId, userId),
-        eq(securityOtpsTable.action, action),
-      ),
-    )
+    .where(challengeMatches)
     .limit(1);
 
   if (!pending) {
     return {
       error: "No pending verification. Please request a new code.",
-      expired: false,
+      status: 401 as const,
     };
   }
   if (isOtpExpired(pending.expiresAt)) {
-    return { error: "Code expired. Please request a new one.", expired: true };
+    return {
+      error: "Code expired. Please request a new one.",
+      status: 410 as const,
+    };
   }
-  if (pending.otp !== normalizeOtp(otpInput)) {
-    return { error: "Incorrect code. Please try again.", expired: false };
+  if (!otpMatches(pending.otp, otpInput)) {
+    const { exhausted } = await registerFailedOtpAttempt(
+      securityOtpsTable,
+      challengeMatches,
+    );
+    return exhausted
+      ? { error: OTP_ATTEMPTS_EXHAUSTED_ERROR, status: 429 as const }
+      : { error: "Incorrect code. Please try again.", status: 401 as const };
   }
 
   return { pending };

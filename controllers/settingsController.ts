@@ -12,6 +12,10 @@ import {
 import type { AuthedRequest } from "../middleware/auth.js";
 import { sendSecurityOtpEmail } from "../lib/email.js";
 import { createOtpChallenge, normalizeEmail } from "../utils/authUtils.js";
+import {
+  OTP_COOLDOWN_ERROR,
+  isWithinOtpCooldown,
+} from "../utils/otpAttemptUtils.js";
 import { parsePositiveInteger } from "../utils/numberUtils.js";
 import {
   hashPassword,
@@ -203,7 +207,10 @@ export const resendSecurityOtp = async (req: AuthedRequest, res: Response) => {
       .where(eq(usersTable.id, userId))
       .limit(1),
     db
-      .select({ id: securityOtpsTable.id })
+      .select({
+        id: securityOtpsTable.id,
+        createdAt: securityOtpsTable.createdAt,
+      })
       .from(securityOtpsTable)
       .where(
         and(
@@ -223,6 +230,10 @@ export const resendSecurityOtp = async (req: AuthedRequest, res: Response) => {
     });
     return;
   }
+  if (isWithinOtpCooldown(pending.createdAt)) {
+    res.status(429).json({ error: OTP_COOLDOWN_ERROR });
+    return;
+  }
 
   const { otp, expiresAt } = createOtpChallenge();
   try {
@@ -237,7 +248,7 @@ export const resendSecurityOtp = async (req: AuthedRequest, res: Response) => {
 
   await db
     .update(securityOtpsTable)
-    .set({ otp, expiresAt, createdAt: new Date() })
+    .set({ otp, expiresAt, attempts: 0, createdAt: new Date() })
     .where(eq(securityOtpsTable.id, pending.id));
 
   res.json({ message: "Verification code resent" });
@@ -301,7 +312,7 @@ export const updateEmail = async (req: AuthedRequest, res: Response) => {
     otp as string,
   );
   if (result.error) {
-    res.status(result.expired ? 410 : 401).json({ error: result.error });
+    res.status(result.status).json({ error: result.error });
     return;
   }
 
@@ -361,7 +372,7 @@ export const transferAdmin = async (req: AuthedRequest, res: Response) => {
     otp as string,
   );
   if (result.error) {
-    res.status(result.expired ? 410 : 401).json({ error: result.error });
+    res.status(result.status).json({ error: result.error });
     return;
   }
 
@@ -483,7 +494,7 @@ export const addCoAdmin = async (req: AuthedRequest, res: Response) => {
     otp as string,
   );
   if (result.error) {
-    res.status(result.expired ? 410 : 401).json({ error: result.error });
+    res.status(result.status).json({ error: result.error });
     return;
   }
 
@@ -535,7 +546,7 @@ export const removeSelfAdmin = async (req: AuthedRequest, res: Response) => {
     otp as string,
   );
   if (result.error) {
-    res.status(result.expired ? 410 : 401).json({ error: result.error });
+    res.status(result.status).json({ error: result.error });
     return;
   }
 
