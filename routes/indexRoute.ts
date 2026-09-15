@@ -1,5 +1,6 @@
 import { Router, type IRouter } from "express";
 import healthRouter from "./healthRoute.js";
+import appVersionRouter from "./appVersionRoute.js";
 import authRouter from "./authRoute.js";
 import messRouter from "./messRoute.js";
 import dataRouter from "./dataRoute.js";
@@ -15,6 +16,7 @@ import consumerBreakdownNotificationRouter from "./consumerBreakdownNotification
 const router: IRouter = Router();
 
 router.use(healthRouter);
+router.use(appVersionRouter);
 router.use(authRouter);
 router.use(messRouter);
 router.use(dataRouter);

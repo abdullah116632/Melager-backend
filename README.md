@@ -21,6 +21,7 @@ Socket.IO · Resend (email) · Expo Push · esbuild
   - [Realtime (Socket.IO)](#realtime-socketio)
   - [Offline sync](#offline-sync)
   - [Push notifications](#push-notifications)
+  - [App update popups](#app-update-popups)
 - [API reference](#api-reference)
 - [Database and migrations](#database-and-migrations)
 - [Build and deploy (cPanel)](#build-and-deploy-cpanel)
@@ -68,6 +69,8 @@ value is missing or invalid.
 | `APP_TIME_ZONE`     |    | Time zone for meal days, month boundaries and meal windows. Default: `Asia/Dhaka`. |
 | `LOG_LEVEL`         |    | Pino log level. Default: `info`. |
 | `DB_POOL_MAX`       |    | Maximum Postgres pool connections. Default: `10`. |
+| `LATEST_APP_VERSION` |   | Normal update popup. Apps older than this, for example `2.1.0`, show "New version available" and can close it. See [App update popups](#app-update-popups). |
+| `MIN_APP_VERSION`   |    | Hard update popup, for critical releases. Apps older than this show "Update required" and cannot be used until updated. |
 
 Generate a session secret:
 
@@ -221,6 +224,37 @@ The mobile app queues changes while offline and replays them through the `…/sy
 - Tokens that Expo reports as `DeviceNotRegistered` are deleted automatically.
 - Push delivery is best-effort. A failed push never fails the API request.
 
+### App update popups
+
+From app 2.0.0 onward, the app can ask users to update. The server only
+**reports** versions and never blocks a request. The app decides which popup to show.
+Older builds (1.0.1 and before) have no popup code and are unaffected.
+
+On launch, and whenever it returns to the foreground, the app reads `GET /api/app/version`:
+
+```json
+{ "minVersion": null, "latestVersion": "2.1.0", "storeUrl": "https://play.google.com/store/apps/details?id=com.melager.mobile" }
+```
+
+| Popup | Set in cPanel | What the user sees |
+| ----- | ------------- | ------------------ |
+| **Normal** | `LATEST_APP_VERSION=2.1.0` | "New version available" with **Update on Play Store** and **Later**. It shows again the next time the app is opened. |
+| **Hard** | `MIN_APP_VERSION=2.1.0` | "Update required" with only **Update on Play Store**. It cannot be closed, so the app cannot be used until it is updated. |
+
+Leave both empty to show nothing. If the app cannot reach the server, it shows no popup.
+
+**Releasing a new version (for example 2.1.0)**
+
+1. Publish it on Google Play and wait until it is **live** for everyone.
+2. In **Setup Node.js App**, set the variable for the popup you want:
+   - `LATEST_APP_VERSION=2.1.0` for a normal update
+   - `MIN_APP_VERSION=2.1.0` for a critical one
+3. Click **SAVE**, then **RESTART**.
+
+> ⚠️ Set these only after the version can be downloaded from the Play Store. Otherwise
+> users are asked to install an update that does not exist yet. With a hard popup, they
+> are locked out.
+
 ---
 
 ## API reference
@@ -232,6 +266,7 @@ All routes are prefixed with **`/api`**. 🔒 means `Authorization: Bearer <toke
 | Method | Path | Description |
 | ------ | ---- | ----------- |
 | GET | `/healthz` | Health check → `{ "status": "ok" }` |
+| GET | `/app/version` | Update popup versions → `{ minVersion, latestVersion, storeUrl }` |
 
 ### Auth
 
@@ -482,5 +517,7 @@ previous release zip, run NPM Install, then start the app again.
 | Realtime events missing or `Session ID unknown` | More than one Node process is running, or the host blocks WebSockets. Run one instance. |
 | Warning about `sslmode=require` being an alias for `verify-full` | Harmless. Use `sslmode=verify-full` to silence it. |
 | 503 / blank page on cPanel | Read `stderr.log` in the app root. |
+| Users stuck on "Update required" | `MIN_APP_VERSION` is newer than what the Play Store offers. Clear or lower it, then restart. |
+| `MIN_APP_VERSION must look like 2.0.0` (or `LATEST_APP_VERSION`) | Use the full `major.minor.patch` form. |
 
 Unknown routes return Express's default HTML `404`, not JSON.
