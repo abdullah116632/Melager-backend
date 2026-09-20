@@ -1,5 +1,6 @@
 import { sql } from "drizzle-orm";
 import {
+  type AnyPgColumn,
   pgTable,
   serial,
   text,
@@ -292,6 +293,12 @@ export const messagesTable = pgTable(
       .notNull()
       .references(() => usersTable.id),
     body: text("body").notNull(),
+    // The message this one replies to. Removing the quoted message keeps the
+    // reply, it just loses the quote, so this is nulled rather than cascaded.
+    replyToMessageId: integer("reply_to_message_id").references(
+      (): AnyPgColumn => messagesTable.id,
+      { onDelete: "set null" },
+    ),
     createdAt: timestamp("created_at").defaultNow().notNull(),
     updatedAt: timestamp("updated_at").defaultNow().notNull(),
   },

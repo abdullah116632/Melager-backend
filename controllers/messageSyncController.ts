@@ -12,6 +12,7 @@ import { deliverMessagePushes } from "../lib/notificationDelivery.js";
 import type { AuthedRequest } from "../middleware/auth.js";
 import { resolveMessAccess } from "../utils/messAccessUtils.js";
 import { emitToMess, isUserViewingConversation } from "../realtime/socket.js";
+import { EMPTY_REPLY, loadReplySnapshot } from "./messageController.js";
 export const syncMessage = async (req: AuthedRequest, res: Response) => {
   const userId = req.auth!.userId,
     id = String(req.body?.clientMutationId ?? ""),
@@ -25,8 +26,30 @@ export const syncMessage = async (req: AuthedRequest, res: Response) => {
     res.status(access.status).json({ error: access.error });
     return;
   }
+  const reply = await loadReplySnapshot(
+    access.messId,
+    req.body?.replyToMessageId,
+  );
+  if (reply === undefined) {
+    res.status(400).json({ error: "The replied message is not in this mess" });
+    return;
+  }
+  // The quoted message is part of what was sent, so a retry that changes it is
+  // a different mutation and must not be served the stored response. A plain
+  // message keeps hashing exactly as before this field existed, so a mutation
+  // queued by an older client still matches its stored hash on retry.
   const hash = createHash("sha256")
-    .update(JSON.stringify({ body, messId: access.messId }))
+    .update(
+      JSON.stringify(
+        reply
+          ? {
+              body,
+              messId: access.messId,
+              replyToMessageId: reply.replyToMessageId,
+            }
+          : { body, messId: access.messId },
+      ),
+    )
     .digest("hex");
   try {
     const result = await db.transaction(async (tx) => {
@@ -72,11 +95,22 @@ export const syncMessage = async (req: AuthedRequest, res: Response) => {
         .limit(1);
       const [m] = await tx
         .insert(messagesTable)
-        .values({ messId: access.messId, senderUserId: userId, body })
+        .values({
+          messId: access.messId,
+          senderUserId: userId,
+          body,
+          replyToMessageId: reply?.replyToMessageId ?? null,
+        })
         .returning();
       const senderName = sender?.name ?? "You";
       const out = {
-        message: { ...m!, senderName, clientMutationId: id },
+        message: {
+          ...m!,
+          senderName,
+          clientMutationId: id,
+          ...EMPTY_REPLY,
+          ...reply,
+        },
       };
       const recipients = await tx
         .select({ userId: consumersTable.userId })

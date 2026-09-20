@@ -1,4 +1,5 @@
 import type { Response } from "express";
+import { alias } from "drizzle-orm/pg-core";
 import {
   and,
   asc,
@@ -27,6 +28,78 @@ import { parsePositiveInteger } from "../utils/numberUtils.js";
 import { deliverMessagePushes } from "../lib/notificationDelivery.js";
 import { emitToMess, isUserViewingConversation } from "../realtime/socket.js";
 import { loadMessageReactions } from "./messageReactionController.js";
+
+// A reply quotes an earlier message, so the same table (and its sender) has to
+// be joined a second time under its own name.
+const quotedMessages = alias(messagesTable, "quoted_messages");
+const quotedSenders = alias(usersTable, "quoted_senders");
+
+// Every message payload carries its quote inline, so a client can render the
+// reply without a second lookup and without keeping the original in memory.
+const messageColumns = {
+  id: messagesTable.id,
+  messId: messagesTable.messId,
+  senderUserId: messagesTable.senderUserId,
+  senderName: usersTable.name,
+  body: messagesTable.body,
+  createdAt: messagesTable.createdAt,
+  updatedAt: messagesTable.updatedAt,
+  replyToMessageId: messagesTable.replyToMessageId,
+  replyToSenderUserId: quotedMessages.senderUserId,
+  replyToSenderName: quotedSenders.name,
+  replyToBody: quotedMessages.body,
+};
+
+export interface ReplySnapshot {
+  replyToMessageId: number;
+  replyToSenderUserId: number;
+  replyToSenderName: string;
+  replyToBody: string;
+}
+
+export const EMPTY_REPLY = {
+  replyToMessageId: null,
+  replyToSenderUserId: null,
+  replyToSenderName: null,
+  replyToBody: null,
+} as const;
+
+/**
+ * Resolves the quoted message for a reply. Returns null when nothing is being
+ * replied to and undefined when the target is missing from this mess, which
+ * the caller reports as a bad request.
+ */
+export const loadReplySnapshot = async (
+  messId: number,
+  rawReplyToMessageId: unknown,
+): Promise<ReplySnapshot | null | undefined> => {
+  if (rawReplyToMessageId === undefined || rawReplyToMessageId === null)
+    return null;
+  const replyToMessageId = parsePositiveInteger(rawReplyToMessageId);
+  if (!replyToMessageId) return undefined;
+  const [quoted] = await db
+    .select({
+      senderUserId: messagesTable.senderUserId,
+      senderName: usersTable.name,
+      body: messagesTable.body,
+    })
+    .from(messagesTable)
+    .innerJoin(usersTable, eq(messagesTable.senderUserId, usersTable.id))
+    .where(
+      and(
+        eq(messagesTable.id, replyToMessageId),
+        eq(messagesTable.messId, messId),
+      ),
+    )
+    .limit(1);
+  if (!quoted) return undefined;
+  return {
+    replyToMessageId,
+    replyToSenderUserId: quoted.senderUserId,
+    replyToSenderName: quoted.senderName,
+    replyToBody: quoted.body,
+  };
+};
 
 const DEFAULT_MESSAGE_LIMIT = 30;
 const MAX_MESSAGE_LIMIT = 50;
@@ -60,17 +133,17 @@ export const getMessages = async (req: AuthedRequest, res: Response) => {
   }
   if (afterId !== null) {
     const messages = await db
-      .select({
-        id: messagesTable.id,
-        messId: messagesTable.messId,
-        senderUserId: messagesTable.senderUserId,
-        senderName: usersTable.name,
-        body: messagesTable.body,
-        createdAt: messagesTable.createdAt,
-        updatedAt: messagesTable.updatedAt,
-      })
+      .select(messageColumns)
       .from(messagesTable)
       .innerJoin(usersTable, eq(messagesTable.senderUserId, usersTable.id))
+      .leftJoin(
+        quotedMessages,
+        eq(messagesTable.replyToMessageId, quotedMessages.id),
+      )
+      .leftJoin(
+        quotedSenders,
+        eq(quotedMessages.senderUserId, quotedSenders.id),
+      )
       .where(
         and(
           eq(messagesTable.messId, access.messId),
@@ -116,17 +189,14 @@ export const getMessages = async (req: AuthedRequest, res: Response) => {
         )
       : undefined;
   const rows = await db
-    .select({
-      id: messagesTable.id,
-      messId: messagesTable.messId,
-      senderUserId: messagesTable.senderUserId,
-      senderName: usersTable.name,
-      body: messagesTable.body,
-      createdAt: messagesTable.createdAt,
-      updatedAt: messagesTable.updatedAt,
-    })
+    .select(messageColumns)
     .from(messagesTable)
     .innerJoin(usersTable, eq(messagesTable.senderUserId, usersTable.id))
+    .leftJoin(
+      quotedMessages,
+      eq(messagesTable.replyToMessageId, quotedMessages.id),
+    )
+    .leftJoin(quotedSenders, eq(quotedMessages.senderUserId, quotedSenders.id))
     .where(
       cursorCondition
         ? and(eq(messagesTable.messId, access.messId), cursorCondition)
@@ -176,6 +246,15 @@ export const createMessage = async (req: AuthedRequest, res: Response) => {
     return;
   }
 
+  const reply = await loadReplySnapshot(
+    access.messId,
+    req.body?.replyToMessageId,
+  );
+  if (reply === undefined) {
+    res.status(400).json({ error: "The replied message is not in this mess" });
+    return;
+  }
+
   const result = await db.transaction(async (tx) => {
     const [created] = await tx
       .insert(messagesTable)
@@ -183,6 +262,7 @@ export const createMessage = async (req: AuthedRequest, res: Response) => {
         messId: access.messId,
         senderUserId: req.auth!.userId,
         body,
+        replyToMessageId: reply?.replyToMessageId ?? null,
       })
       .returning();
 
@@ -210,7 +290,12 @@ export const createMessage = async (req: AuthedRequest, res: Response) => {
     );
 
     return {
-      message: { ...created!, senderName: sender.name },
+      message: {
+        ...created!,
+        senderName: sender.name,
+        ...EMPTY_REPLY,
+        ...reply,
+      },
       pushRecipientUserIds,
     };
   });
