@@ -5,10 +5,21 @@ import {
   consumersTable,
   db,
   messesTable,
+  securityOtpsTable,
   usersTable,
 } from "../db/dbConfig.js";
 import type { AuthedRequest } from "../middleware/auth.js";
-import { normalizeEmail } from "../utils/authUtils.js";
+import { sendNewEmailVerificationOtp } from "../lib/email.js";
+import {
+  createOtpChallenge,
+  isValidEmail,
+  normalizeEmail,
+} from "../utils/authUtils.js";
+import {
+  OTP_COOLDOWN_ERROR,
+  isWithinOtpCooldown,
+} from "../utils/otpAttemptUtils.js";
+import { clearSecurityOtp } from "../utils/securityOtpUtils.js";
 import { parsePositiveInteger } from "../utils/numberUtils.js";
 import { verifyPassword } from "../utils/passwordUtils.js";
 import { resolveMessAccess } from "../utils/messAccessUtils.js";
@@ -117,10 +128,7 @@ export const getMessAdminsV2 = async (req: AuthedRequest, res: Response) => {
     .from(consumersTable)
     .leftJoin(usersTable, eq(consumersTable.userId, usersTable.id))
     .where(
-      and(
-        eq(consumersTable.messId, messId),
-        eq(consumersTable.isAdmin, true),
-      ),
+      and(eq(consumersTable.messId, messId), eq(consumersTable.isAdmin, true)),
     );
 
   res.json({
@@ -134,7 +142,10 @@ export const getMessAdminsV2 = async (req: AuthedRequest, res: Response) => {
 // GET /api/v2/settings/security/eligible-admins?messId=X — same listing as
 // the v1 endpoint, but open to any admin (primary or co-admin), not just
 // the primary admin.
-export const getEligibleAdminsV2 = async (req: AuthedRequest, res: Response) => {
+export const getEligibleAdminsV2 = async (
+  req: AuthedRequest,
+  res: Response,
+) => {
   const userId = req.auth!.userId;
   const access = await resolveMessAccess(userId, req.query.messId, {
     adminOnly: true,
@@ -495,4 +506,197 @@ export const removeSelfAdminV2 = async (req: AuthedRequest, res: Response) => {
   }
 
   res.json({ message: "Your admin role was removed successfully" });
+};
+
+// POST /api/v2/settings/security/verify-identity — confirms the caller's
+// password or Google account without doing anything else. The flows that
+// follow verify again, so this only exists to report a wrong password before
+// the user has filled in the rest of the form.
+export const verifyIdentityV2 = async (req: AuthedRequest, res: Response) => {
+  const identity = await verifyCallerIdentity(
+    req.auth!.userId,
+    req.body?.password,
+    req.body?.googleIdToken,
+  );
+  if (!identity.ok) {
+    res.status(identity.status).json({ error: identity.error });
+    return;
+  }
+  res.json({ verified: true });
+};
+
+/** Rejects a new email the account cannot take, with the status to answer. */
+const validateNewEmail = async (
+  userId: number,
+  rawEmail: unknown,
+): Promise<
+  { ok: true; newEmail: string } | { ok: false; status: number; error: string }
+> => {
+  if (!isValidEmail(rawEmail)) {
+    return { ok: false, status: 400, error: "Enter a valid email address" };
+  }
+  const newEmail = normalizeEmail(rawEmail);
+  const [[currentUser], [existing]] = await Promise.all([
+    db
+      .select({ email: usersTable.email })
+      .from(usersTable)
+      .where(eq(usersTable.id, userId))
+      .limit(1),
+    db
+      .select({ id: usersTable.id })
+      .from(usersTable)
+      .where(eq(usersTable.email, newEmail))
+      .limit(1),
+  ]);
+  if (!currentUser) {
+    return { ok: false, status: 404, error: "Account not found" };
+  }
+  if (newEmail === normalizeEmail(currentUser.email)) {
+    return {
+      ok: false,
+      status: 400,
+      error: "New email must be different from your current email",
+    };
+  }
+  if (existing && existing.id !== userId) {
+    return {
+      ok: false,
+      status: 409,
+      error: "This email address is already in use",
+    };
+  }
+  return { ok: true, newEmail };
+};
+
+// POST /api/v2/settings/security/request-email-change — password (or Google)
+// proves who is asking, then the code goes to the address being claimed. The
+// account keeps its current email until that code is confirmed through the
+// existing POST /settings/security/update-email.
+export const requestEmailChangeV2 = async (
+  req: AuthedRequest,
+  res: Response,
+) => {
+  const userId = req.auth!.userId;
+  const identity = await verifyCallerIdentity(
+    userId,
+    req.body?.password,
+    req.body?.googleIdToken,
+  );
+  if (!identity.ok) {
+    res.status(identity.status).json({ error: identity.error });
+    return;
+  }
+
+  const validated = await validateNewEmail(userId, req.body?.newEmail);
+  if (!validated.ok) {
+    res.status(validated.status).json({ error: validated.error });
+    return;
+  }
+
+  const [user] = await db
+    .select({ name: usersTable.name })
+    .from(usersTable)
+    .where(eq(usersTable.id, userId))
+    .limit(1);
+  if (!user) {
+    res.status(404).json({ error: "Account not found" });
+    return;
+  }
+
+  const { otp, expiresAt } = createOtpChallenge();
+  await clearSecurityOtp(userId, "update_email");
+  await db.insert(securityOtpsTable).values({
+    userId,
+    action: "update_email",
+    otp,
+    payload: validated.newEmail,
+    expiresAt,
+  });
+
+  try {
+    await sendNewEmailVerificationOtp(validated.newEmail, user.name, otp);
+  } catch (err) {
+    req.log.error({ err }, "Failed to send new email verification code");
+    // Nothing is half-changed: the challenge is dropped so the user can start
+    // again rather than waiting for a code that was never sent.
+    await clearSecurityOtp(userId, "update_email");
+    res
+      .status(500)
+      .json({ error: "Failed to send verification code. Please try again." });
+    return;
+  }
+
+  res.json({ message: "Verification code sent", email: validated.newEmail });
+};
+
+// POST /api/v2/settings/security/resend-email-change — resends the pending
+// code to the address being claimed. The v1 resend sends to the account's
+// current email, which is the wrong mailbox for this flow.
+export const resendEmailChangeOtpV2 = async (
+  req: AuthedRequest,
+  res: Response,
+) => {
+  const userId = req.auth!.userId;
+
+  const [[user], [pending]] = await Promise.all([
+    db
+      .select({ name: usersTable.name })
+      .from(usersTable)
+      .where(eq(usersTable.id, userId))
+      .limit(1),
+    db
+      .select({
+        id: securityOtpsTable.id,
+        payload: securityOtpsTable.payload,
+        createdAt: securityOtpsTable.createdAt,
+      })
+      .from(securityOtpsTable)
+      .where(
+        and(
+          eq(securityOtpsTable.userId, userId),
+          eq(securityOtpsTable.action, "update_email"),
+        ),
+      )
+      .limit(1),
+  ]);
+  if (!user) {
+    res.status(404).json({ error: "Account not found" });
+    return;
+  }
+  if (!pending?.payload) {
+    res.status(400).json({
+      error: "No pending verification. Please start the request again.",
+    });
+    return;
+  }
+  if (isWithinOtpCooldown(pending.createdAt)) {
+    res.status(429).json({ error: OTP_COOLDOWN_ERROR });
+    return;
+  }
+
+  // The address is re-checked because someone else may have claimed it while
+  // this request was waiting.
+  const validated = await validateNewEmail(userId, pending.payload);
+  if (!validated.ok) {
+    await clearSecurityOtp(userId, "update_email");
+    res.status(validated.status).json({ error: validated.error });
+    return;
+  }
+
+  const { otp, expiresAt } = createOtpChallenge();
+  try {
+    await sendNewEmailVerificationOtp(validated.newEmail, user.name, otp);
+  } catch (err) {
+    req.log.error({ err }, "Failed to resend new email verification code");
+    res
+      .status(500)
+      .json({ error: "Failed to send verification code. Please try again." });
+    return;
+  }
+  await db
+    .update(securityOtpsTable)
+    .set({ otp, expiresAt, attempts: 0, createdAt: new Date() })
+    .where(eq(securityOtpsTable.id, pending.id));
+
+  res.json({ message: "Verification code sent", email: validated.newEmail });
 };

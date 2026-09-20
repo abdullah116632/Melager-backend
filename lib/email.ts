@@ -111,6 +111,37 @@ export async function sendAccountDeletionOtpEmail(
   });
 }
 
+/**
+ * Verification code for an email change, sent to the ADDRESS BEING CLAIMED.
+ * The account keeps its current email until this code is entered, so the copy
+ * addresses someone who may not yet be the owner of the account.
+ */
+export async function sendNewEmailVerificationOtp(
+  to: string,
+  name: string,
+  otp: string,
+): Promise<void> {
+  const resend = getResend();
+  await resend.emails.send({
+    from: FROM,
+    to,
+    subject: `${otp} — verify your new email address`,
+    html: `
+      <div style="font-family:sans-serif;max-width:480px;margin:0 auto;padding:32px 24px;">
+        <h2 style="color:#0D9488;margin-bottom:8px;">Verify Your New Email</h2>
+        <p style="color:#374151;">Hi <strong>${escapeHtml(name)}</strong>,</p>
+        <p style="color:#374151;">This address was entered as the new login email for a Melager account. Enter the code below in the app to confirm it:</p>
+        <div style="font-size:40px;font-weight:700;letter-spacing:12px;text-align:center;
+                    padding:24px;background:#F0FDFA;border:2px solid #0D9488;
+                    border-radius:12px;margin:24px 0;color:#0D9488;">
+          ${otp}
+        </div>
+        <p style="color:#6B7280;font-size:14px;">The account keeps its current email until this code is entered. This code expires in <strong>10 minutes</strong>. If you did not request this, you can safely ignore this email.</p>
+      </div>
+    `,
+  });
+}
+
 type SecurityAction =
   "update_email" | "add_admin" | "add_co_admin" | "remove_self_admin";
 
