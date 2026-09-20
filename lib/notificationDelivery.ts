@@ -269,6 +269,44 @@ export const deliverBazarAssignmentPushes = async ({
   );
 };
 
+/**
+ * The night-before reminder for tomorrow's bazar duty.
+ *
+ * It carries the same `type` and `route` as the manual assignment push, so app
+ * versions already in the field route it to the Bazar List without needing an
+ * update; only the wording differs.
+ */
+export const deliverBazarDutyReminderPushes = async ({
+  recipientUserIds,
+  messId,
+  bazarDate,
+}: {
+  recipientUserIds: number[];
+  messId: number;
+  bazarDate: string;
+}): Promise<void> => {
+  const weekdayName =
+    BAZAR_WEEKDAY_NAMES[bazarWeekdayFromDate(bazarDate)] ?? "tomorrow";
+
+  recipientUserIds.forEach((userId) => {
+    emitToUser(userId, "bazar-assignment:created", { messId });
+  });
+
+  await deliverPushes(
+    recipientUserIds.map((userId) => ({
+      userId,
+      title: "Tomorrow is your bazar day",
+      body: `You are on bazar duty tomorrow, ${weekdayName} (${bazarDate}).`,
+      channelId: "default",
+      data: {
+        messId,
+        type: "bazar_assignment",
+        route: "/bazar-list",
+      },
+    })),
+  );
+};
+
 /** Sends Consumer Breakdown pushes without adding entries to the bell. */
 export const deliverConsumerBreakdownPushes = async ({
   recipientUserIds,

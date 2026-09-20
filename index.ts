@@ -2,6 +2,7 @@ import "dotenv/config";
 import { createServer } from "node:http";
 import { networkInterfaces } from "node:os";
 import app from "./app.js";
+import { startBazarDutyReminderScheduler } from "./lib/bazarDutyReminderScheduler.js";
 import { logger } from "./lib/logger.js";
 import { initializeRealtime } from "./realtime/socket.js";
 
@@ -46,4 +47,7 @@ httpServer.once("error", (err) => {
 httpServer.listen({ port, host: "0.0.0.0" }, () => {
   logger.info({ port, host: "0.0.0.0" }, "Server listening");
   logger.info(`Server started at http://${getLocalNetworkAddress()}:${port}`);
+  // Started only once the server is actually accepting requests, so a
+  // failure here can never keep the API from coming up.
+  startBazarDutyReminderScheduler();
 });

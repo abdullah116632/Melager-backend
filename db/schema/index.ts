@@ -440,6 +440,35 @@ export const bazarAssignmentNotificationsTable = pgTable(
   ],
 );
 
+// Bookkeeping for the nightly "your bazar duty is tomorrow" push.
+//
+// The alert rows in `bazar_assignment_notifications` cannot serve this purpose:
+// an admin may legitimately press "notify assigned members" more than once for
+// the same day, so that table has no uniqueness to lean on. This one does, and
+// the reminder job inserts here first — a conflict means the reminder already
+// went out, so a restart at 10pm cannot send it twice.
+export const bazarDutyRemindersTable = pgTable(
+  "bazar_duty_reminders",
+  {
+    id: serial("id").primaryKey(),
+    messId: integer("mess_id")
+      .notNull()
+      .references(() => messesTable.id, { onDelete: "cascade" }),
+    userId: integer("user_id")
+      .notNull()
+      .references(() => usersTable.id, { onDelete: "cascade" }),
+    bazarDate: text("bazar_date").notNull(),
+    sentAt: timestamp("sent_at").defaultNow().notNull(),
+  },
+  (t) => [
+    unique("bazar_duty_reminders_mess_user_date_uq").on(
+      t.messId,
+      t.userId,
+      t.bazarDate,
+    ),
+  ],
+);
+
 // Consumer Breakdown alerts have their own badge and never appear in the
 // shared notification bell.
 export const consumerBreakdownNotificationsTable = pgTable(
