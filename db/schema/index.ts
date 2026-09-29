@@ -282,6 +282,28 @@ export const pushTokensTable = pgTable(
   (t) => [index("push_tokens_user_idx").on(t.userId)],
 );
 
+export const MESSAGE_ATTACHMENT_KINDS = [
+  "image",
+  "video",
+  "audio",
+  "file",
+] as const;
+export type MessageAttachmentKind = (typeof MESSAGE_ATTACHMENT_KINDS)[number];
+
+export interface MessageAttachment {
+  /** Client-generated UUID that names the file on every device. */
+  id: string;
+  kind: MessageAttachmentKind;
+  name: string;
+  mimeType: string;
+  size: number;
+  /** Hex SHA-256 of the bytes, checked by each receiver before keeping them. */
+  sha256: string;
+  width?: number | null;
+  height?: number | null;
+  durationMs?: number | null;
+}
+
 export const messagesTable = pgTable(
   "messages",
   {
@@ -299,6 +321,10 @@ export const messagesTable = pgTable(
       (): AnyPgColumn => messagesTable.id,
       { onDelete: "set null" },
     ),
+    // Describes a file shared in the chat. Only the description lives here:
+    // the bytes stay on members' phones and travel device to device through
+    // the realtime relay, so null means a plain text message.
+    attachment: jsonb("attachment").$type<MessageAttachment>(),
     createdAt: timestamp("created_at").defaultNow().notNull(),
     updatedAt: timestamp("updated_at").defaultNow().notNull(),
   },

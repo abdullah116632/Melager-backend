@@ -28,6 +28,10 @@ import { parsePositiveInteger } from "../utils/numberUtils.js";
 import { deliverMessagePushes } from "../lib/notificationDelivery.js";
 import { emitToMess, isUserViewingConversation } from "../realtime/socket.js";
 import { loadMessageReactions } from "./messageReactionController.js";
+import {
+  attachmentFallbackBody,
+  parseMessageAttachment,
+} from "../utils/messageAttachmentUtils.js";
 
 // A reply quotes an earlier message, so the same table (and its sender) has to
 // be joined a second time under its own name.
@@ -42,6 +46,7 @@ const messageColumns = {
   senderUserId: messagesTable.senderUserId,
   senderName: usersTable.name,
   body: messagesTable.body,
+  attachment: messagesTable.attachment,
   createdAt: messagesTable.createdAt,
   updatedAt: messagesTable.updatedAt,
   replyToMessageId: messagesTable.replyToMessageId,
@@ -222,7 +227,16 @@ export const getMessages = async (req: AuthedRequest, res: Response) => {
 };
 
 export const createMessage = async (req: AuthedRequest, res: Response) => {
-  const body = String(req.body?.body ?? "").trim();
+  const attachment = parseMessageAttachment(req.body?.attachment);
+  if (attachment === undefined) {
+    res.status(400).json({ error: "The attached file description is invalid" });
+    return;
+  }
+  // A file may be sent without a caption; it then gets a readable body so
+  // older app builds, push notifications and reply quotes still say something.
+  const typedBody = String(req.body?.body ?? "").trim();
+  const body =
+    typedBody || (attachment ? attachmentFallbackBody(attachment) : "");
   if (!body || body.length > MAX_MESSAGE_LENGTH) {
     res.status(400).json({
       error: `message body is required and must be at most ${MAX_MESSAGE_LENGTH} characters`,
@@ -263,6 +277,7 @@ export const createMessage = async (req: AuthedRequest, res: Response) => {
         senderUserId: req.auth!.userId,
         body,
         replyToMessageId: reply?.replyToMessageId ?? null,
+        attachment,
       })
       .returning();
 

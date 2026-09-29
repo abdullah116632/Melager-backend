@@ -6,6 +6,7 @@ import { getMessContext } from "../lib/mess-access.js";
 import { logger } from "../lib/logger.js";
 import { SESSION_SECRET } from "../lib/sessionSecret.js";
 import type { AuthPayload } from "../middleware/auth.js";
+import { registerMediaRelay } from "./mediaRelay.js";
 
 type RealtimeSocket = Socket<
   {
@@ -90,8 +91,21 @@ export const initializeRealtime = (httpServer: HttpServer): Server => {
 
   io.on("connection", (socket) => {
     const realtimeSocket = socket as RealtimeSocket;
+    // A phone moves chat files over a second connection of its own, so large
+    // file chunks never queue ahead of messages and other live updates on the
+    // main one. That connection only carries the relay: it joins no rooms and
+    // does not count as viewing the conversation.
+    if (socket.handshake.auth?.channel === "media") {
+      registerMediaRelay(io, socket, realtimeSocket.data);
+      return;
+    }
     realtimeSocket.join(messRoom(realtimeSocket.data.messId));
     realtimeSocket.join(userRoom(realtimeSocket.data.userId));
+    // Test builds made before the separate media connection ran the relay on
+    // the main one; keep serving them.
+    if (socket.handshake.auth?.mediaRelay === 1) {
+      registerMediaRelay(io, socket, realtimeSocket.data);
+    }
     realtimeSocket.on("conversation:enter", (payload) => {
       if (Number(payload?.messId) !== realtimeSocket.data.messId) return;
       updateConversationPresence(realtimeSocket, true);

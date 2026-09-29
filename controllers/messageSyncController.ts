@@ -13,11 +13,17 @@ import type { AuthedRequest } from "../middleware/auth.js";
 import { resolveMessAccess } from "../utils/messAccessUtils.js";
 import { emitToMess, isUserViewingConversation } from "../realtime/socket.js";
 import { EMPTY_REPLY, loadReplySnapshot } from "./messageController.js";
+import {
+  attachmentFallbackBody,
+  parseMessageAttachment,
+} from "../utils/messageAttachmentUtils.js";
 export const syncMessage = async (req: AuthedRequest, res: Response) => {
+  const attachment = parseMessageAttachment(req.body?.attachment);
+  const typedBody = String(req.body?.body ?? "").trim();
   const userId = req.auth!.userId,
     id = String(req.body?.clientMutationId ?? ""),
-    body = String(req.body?.body ?? "").trim();
-  if (!id || !body || body.length > 2000) {
+    body = typedBody || (attachment ? attachmentFallbackBody(attachment) : "");
+  if (attachment === undefined || !id || !body || body.length > 2000) {
     res.status(400).json({ error: "Invalid message" });
     return;
   }
@@ -37,18 +43,16 @@ export const syncMessage = async (req: AuthedRequest, res: Response) => {
   // The quoted message is part of what was sent, so a retry that changes it is
   // a different mutation and must not be served the stored response. A plain
   // message keeps hashing exactly as before this field existed, so a mutation
-  // queued by an older client still matches its stored hash on retry.
+  // queued by an older client still matches its stored hash on retry. The
+  // same holds for an attached file, which only joins the hash when present.
   const hash = createHash("sha256")
     .update(
-      JSON.stringify(
-        reply
-          ? {
-              body,
-              messId: access.messId,
-              replyToMessageId: reply.replyToMessageId,
-            }
-          : { body, messId: access.messId },
-      ),
+      JSON.stringify({
+        body,
+        messId: access.messId,
+        ...(reply ? { replyToMessageId: reply.replyToMessageId } : {}),
+        ...(attachment ? { attachmentId: attachment.id } : {}),
+      }),
     )
     .digest("hex");
   try {
@@ -100,6 +104,7 @@ export const syncMessage = async (req: AuthedRequest, res: Response) => {
           senderUserId: userId,
           body,
           replyToMessageId: reply?.replyToMessageId ?? null,
+          attachment,
         })
         .returning();
       const senderName = sender?.name ?? "You";
