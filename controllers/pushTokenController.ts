@@ -11,7 +11,9 @@ export const registerPushToken = async (req: AuthedRequest, res: Response) => {
   const token = String(req.body?.token ?? "").trim();
   const platform = String(req.body?.platform ?? "unknown").trim();
   if (!isExpoPushToken(token) || !platform || platform.length > 32) {
-    res.status(400).json({ error: "A valid Expo push token and platform are required" });
+    res
+      .status(400)
+      .json({ error: "A valid Expo push token and platform are required" });
     return;
   }
 

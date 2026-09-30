@@ -8,6 +8,7 @@ import {
   numeric,
   boolean,
   timestamp,
+  date,
   jsonb,
   bigserial,
   unique,
@@ -302,6 +303,11 @@ export interface MessageAttachment {
   width?: number | null;
   height?: number | null;
   durationMs?: number | null;
+  /**
+   * Set by the server, never by a client: until this time (ISO) the file can
+   * also be fetched from R2, so a member gets it while its sender is offline.
+   */
+  storedUntil?: string | null;
 }
 
 export const messagesTable = pgTable(
@@ -389,6 +395,33 @@ export const messageReadStatesTable = pgTable(
   (t) => [
     unique("message_read_states_mess_user_uq").on(t.messId, t.userId),
     index("message_read_states_user_idx").on(t.userId),
+  ],
+);
+
+/**
+ * Every file sent in a mess chat, counted against the daily limits (see
+ * controllers/messageFileController.ts). `stored` marks files a phone was
+ * allowed to put in R2; R2's lifecycle rule deletes the files themselves.
+ */
+export const messageFileUploadsTable = pgTable(
+  "message_file_uploads",
+  {
+    fileId: text("file_id").primaryKey(),
+    messId: integer("mess_id")
+      .notNull()
+      .references(() => messesTable.id, { onDelete: "cascade" }),
+    uploaderUserId: integer("uploader_user_id")
+      .notNull()
+      .references(() => usersTable.id, { onDelete: "cascade" }),
+    sizeBytes: integer("size_bytes").notNull(),
+    sha256: text("sha256").notNull(),
+    usageDate: date("usage_date", { mode: "string" }).notNull(),
+    stored: boolean("stored").default(false).notNull(),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    expiresAt: timestamp("expires_at").notNull(),
+  },
+  (t) => [
+    index("message_file_uploads_date_mess_idx").on(t.usageDate, t.messId),
   ],
 );
 

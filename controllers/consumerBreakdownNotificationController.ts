@@ -33,7 +33,11 @@ export const sendConsumerBreakdownNotification = async (
           sql`${consumersTable.userId} is not null`,
         ),
       );
-    const userIds = [...new Set(members.flatMap(({ userId }) => (userId == null ? [] : [userId])))];
+    const userIds = [
+      ...new Set(
+        members.flatMap(({ userId }) => (userId == null ? [] : [userId])),
+      ),
+    ];
     if (userIds.length === 0) return [];
     return tx
       .insert(consumerBreakdownNotificationsTable)
@@ -64,7 +68,13 @@ export const getUnreadConsumerBreakdownCount = async (
   const [result] = await db
     .select({ total: count() })
     .from(consumerBreakdownNotificationsTable)
-    .where(and(eq(consumerBreakdownNotificationsTable.messId, access.messId), eq(consumerBreakdownNotificationsTable.userId, req.auth!.userId), isNull(consumerBreakdownNotificationsTable.readAt)));
+    .where(
+      and(
+        eq(consumerBreakdownNotificationsTable.messId, access.messId),
+        eq(consumerBreakdownNotificationsTable.userId, req.auth!.userId),
+        isNull(consumerBreakdownNotificationsTable.readAt),
+      ),
+    );
   res.json({ unreadCount: Number(result?.total ?? 0) });
 };
 
@@ -80,6 +90,12 @@ export const markConsumerBreakdownNotificationsRead = async (
   await db
     .update(consumerBreakdownNotificationsTable)
     .set({ readAt: new Date() })
-    .where(and(eq(consumerBreakdownNotificationsTable.messId, access.messId), eq(consumerBreakdownNotificationsTable.userId, req.auth!.userId), isNull(consumerBreakdownNotificationsTable.readAt)));
+    .where(
+      and(
+        eq(consumerBreakdownNotificationsTable.messId, access.messId),
+        eq(consumerBreakdownNotificationsTable.userId, req.auth!.userId),
+        isNull(consumerBreakdownNotificationsTable.readAt),
+      ),
+    );
   res.json({ unreadCount: 0 });
 };

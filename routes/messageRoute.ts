@@ -6,6 +6,11 @@ import {
   getUnreadMessageCount,
   markMessagesRead,
 } from "../controllers/messageController.js";
+import {
+  getFileDownloadUrl,
+  getFileQuota,
+  requestFileUpload,
+} from "../controllers/messageFileController.js";
 import { setMessageReaction } from "../controllers/messageReactionController.js";
 import { syncMessage } from "../controllers/messageSyncController.js";
 import { requireAuth } from "../middleware/auth.js";
@@ -18,5 +23,8 @@ router.post("/mess/messages", requireAuth, createMessage);
 router.post("/mess/messages/sync", requireAuth, syncMessage);
 router.post("/mess/messages/read", requireAuth, markMessagesRead);
 router.post("/mess/messages/reaction", requireAuth, setMessageReaction);
+router.post("/mess/messages/file-upload", requireAuth, requestFileUpload);
+router.get("/mess/messages/file-url", requireAuth, getFileDownloadUrl);
+router.get("/mess/messages/file-quota", requireAuth, getFileQuota);
 
 export default router;

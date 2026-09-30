@@ -4,8 +4,12 @@ import {
   type MessageAttachmentKind,
 } from "../db/dbConfig.js";
 
-/** Largest file a member may share. Every byte is relayed through this server. */
-export const MAX_ATTACHMENT_BYTES = 50 * 1024 * 1024;
+/**
+ * Largest file a member may send, however it travels. Enforced when a file
+ * is counted (controllers/messageFileController.ts), so an oversized file
+ * gets a clear 413 rather than a malformed-description error.
+ */
+export const MAX_ATTACHMENT_BYTES = 8 * 1024 * 1024;
 
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -59,7 +63,6 @@ export const parseMessageAttachment = (
     !mimeType ||
     !Number.isSafeInteger(size) ||
     size <= 0 ||
-    size > MAX_ATTACHMENT_BYTES ||
     !SHA256_PATTERN.test(sha256) ||
     width === undefined ||
     height === undefined ||

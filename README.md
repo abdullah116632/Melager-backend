@@ -71,6 +71,9 @@ value is missing or invalid.
 | `DB_POOL_MAX`       |    | Maximum Postgres pool connections. Default: `10`. |
 | `LATEST_APP_VERSION` |   | Normal update popup. Apps older than this, for example `2.1.0`, show "New version available" and can close it. See [App update popups](#app-update-popups). |
 | `MIN_APP_VERSION`   |    | Hard update popup, for critical releases. Apps older than this show "Update required" and cannot be used until updated. |
+| `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET_NAME` |    | Cloudflare R2 bucket for chat files (token with **Object Read & Write** on that bucket only). Without them, chat files are shared phone to phone only. |
+| `R2_ENDPOINT`       |    | R2 S3 endpoint, `https://<account id>.r2.cloudflarestorage.com`. Default: built from `R2_ACCOUNT_ID`. |
+| `R2_FILE_RETENTION_DAYS` |    | Days a chat file stays in R2. **Must match the bucket's lifecycle rule** on the `chat-files/` prefix. Default: `3`. |
 
 Generate a session secret:
 
@@ -372,6 +375,9 @@ All routes are prefixed with **`/api`**. 🔒 means `Authorization: Bearer <toke
 | GET 🔒 | `/mess/messages/unread-count` | Unread message count |
 | POST 🔒 | `/mess/messages/read` | Mark messages read |
 | POST 🔒 | `/mess/messages/reaction` | Set or remove a reaction |
+| GET 🔒 | `/mess/messages/file-quota` | Today's chat file usage of the mess (30 MB a day, 8 MB a file) |
+| POST 🔒 | `/mess/messages/file-upload` | Counts a chat file against the daily limit; presigned R2 upload URL, or `relay` when the global storage limit is reached |
+| GET 🔒 | `/mess/messages/file-url` | Presigned R2 download URL for a stored chat file (410 once expired) |
 
 ### Consumer breakdown
 
@@ -405,13 +411,13 @@ All routes are prefixed with **`/api`**. 🔒 means `Authorization: Bearer <toke
 
 ## Database and migrations
 
-The schema lives in [db/schema/index.ts](db/schema/index.ts). It defines 28 tables, grouped as:
+The schema lives in [db/schema/index.ts](db/schema/index.ts). It defines 29 tables, grouped as:
 
 - **Accounts:** `users`, `otp_verifications`, `password_resets`, `security_otps`, `account_deletion_otps`
 - **Mess:** `messes`, `consumers`, `member_requests`
 - **Money and meals:** `meals`, `expense_days`, `deposits`, `deposit_entries`, `meal_control`, `meal_control_helper`, `meal_opt_outs`
 - **Bazar:** `bazar_items`, `bazar_assignments`, `bazar_assignment_notifications`
-- **Communication:** `notices`, `notice_read_states`, `notifications`, `messages`, `message_reactions`, `message_read_states`, `consumer_breakdown_notifications`, `push_tokens`
+- **Communication:** `notices`, `notice_read_states`, `notifications`, `messages`, `message_reactions`, `message_read_states`, `message_file_uploads`, `consumer_breakdown_notifications`, `push_tokens`
 - **Offline sync:** `sync_client_mutations`, `sync_changes`
 
 ### Two ways to change the schema

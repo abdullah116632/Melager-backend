@@ -17,6 +17,7 @@ import {
   attachmentFallbackBody,
   parseMessageAttachment,
 } from "../utils/messageAttachmentUtils.js";
+import { prepareMessageAttachment } from "./messageFileController.js";
 export const syncMessage = async (req: AuthedRequest, res: Response) => {
   const attachment = parseMessageAttachment(req.body?.attachment);
   const typedBody = String(req.body?.body ?? "").trim();
@@ -55,6 +56,20 @@ export const syncMessage = async (req: AuthedRequest, res: Response) => {
       }),
     )
     .digest("hex");
+  // Checked before the hash is compared, but it never joins the hash: a retry
+  // is the same message whether or not its file reached R2, and a file is
+  // counted against the daily limit only once.
+  const prepared = await prepareMessageAttachment(
+    access.messId,
+    userId,
+    attachment,
+    req.body?.attachmentUploaded === true,
+  );
+  if (!prepared.ok) {
+    res.status(prepared.status).json({ error: prepared.error });
+    return;
+  }
+  const storedAttachment = prepared.attachment;
   try {
     const result = await db.transaction(async (tx) => {
       const [r] = await tx
@@ -104,7 +119,7 @@ export const syncMessage = async (req: AuthedRequest, res: Response) => {
           senderUserId: userId,
           body,
           replyToMessageId: reply?.replyToMessageId ?? null,
-          attachment,
+          attachment: storedAttachment,
         })
         .returning();
       const senderName = sender?.name ?? "You";

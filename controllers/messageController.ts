@@ -32,6 +32,7 @@ import {
   attachmentFallbackBody,
   parseMessageAttachment,
 } from "../utils/messageAttachmentUtils.js";
+import { prepareMessageAttachment } from "./messageFileController.js";
 
 // A reply quotes an earlier message, so the same table (and its sender) has to
 // be joined a second time under its own name.
@@ -269,6 +270,17 @@ export const createMessage = async (req: AuthedRequest, res: Response) => {
     return;
   }
 
+  const prepared = await prepareMessageAttachment(
+    access.messId,
+    req.auth!.userId,
+    attachment,
+    req.body?.attachmentUploaded === true,
+  );
+  if (!prepared.ok) {
+    res.status(prepared.status).json({ error: prepared.error });
+    return;
+  }
+  const storedAttachment = prepared.attachment;
   const result = await db.transaction(async (tx) => {
     const [created] = await tx
       .insert(messagesTable)
@@ -277,7 +289,7 @@ export const createMessage = async (req: AuthedRequest, res: Response) => {
         senderUserId: req.auth!.userId,
         body,
         replyToMessageId: reply?.replyToMessageId ?? null,
-        attachment,
+        attachment: storedAttachment,
       })
       .returning();
 
