@@ -12,6 +12,7 @@ import {
   usersTable,
   memberRequestsTable,
   notificationsTable,
+  syncChangesTable,
 } from "../db/dbConfig.js";
 import { deliverNotifications } from "../lib/notificationDelivery.js";
 import type { AuthedRequest } from "../middleware/auth.js";
@@ -685,6 +686,17 @@ export const deleteConsumer = async (req: AuthedRequest, res: Response) => {
         and(
           eq(mealsTable.consumerId, consumerId),
           eq(mealsTable.messId, mess.id),
+        ),
+      );
+    // The daily-meal change feed would otherwise keep replaying this member's
+    // meals to any phone that pulls the month from the start.
+    await tx
+      .delete(syncChangesTable)
+      .where(
+        and(
+          eq(syncChangesTable.messId, mess.id),
+          eq(syncChangesTable.entityType, "daily_meal"),
+          sql`${syncChangesTable.payload}->>'consumerId' = ${String(consumerId)}`,
         ),
       );
     await tx
