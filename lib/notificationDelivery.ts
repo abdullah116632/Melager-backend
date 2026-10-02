@@ -1,9 +1,11 @@
-import { and, count, inArray, isNull, sql } from "drizzle-orm";
+import { and, count, eq, inArray, isNull, sql } from "drizzle-orm";
 
 import {
   db,
+  messesTable,
   notificationsTable,
   pushTokensTable,
+  usersTable,
   type Notification,
 } from "../db/dbConfig.js";
 import { logger } from "./logger.js";
@@ -33,8 +35,15 @@ type PushDelivery = {
   data: Record<string, unknown>;
 };
 
+// Notifications that must open Mess Hub, outside every mess. Their push data
+// leaves messId out: an app that sees one switches into that mess first.
+const isMessHubNotification = (type: string): boolean =>
+  type === "manager_role_transferred" || type === "manager_role_added";
+
 const notificationRoute = (type: string): string =>
-  type === "member_request"
+  isMessHubNotification(type)
+    ? "/"
+    : type === "member_request"
     ? "/member-requests"
     : type === "member_request_accepted"
       ? "/"
@@ -170,13 +179,70 @@ export const deliverNotifications = async (
       badge: unreadByUser.get(notification.userId) ?? 1,
       data: {
         notificationId: notification.id,
-        messId: notification.messId,
+        ...(isMessHubNotification(notification.type)
+          ? {}
+          : { messId: notification.messId }),
         noticeId: notification.noticeId,
         type: notification.type,
         route: notificationRoute(notification.type),
       },
     })),
   );
+};
+
+/**
+ * Tells a member they now manage a mess, either because the role was handed
+ * to them or because they were added as another manager. It is saved to that
+ * mess's notification list and pushed to the member's devices; the push opens
+ * Mess Hub (see isMessHubNotification). Best-effort and never throws: the role
+ * change has already been saved.
+ */
+export const deliverManagerRolePush = async ({
+  messId,
+  recipientUserId,
+  actorUserId,
+  kind,
+}: {
+  messId: number;
+  recipientUserId: number;
+  actorUserId: number;
+  kind: "transferred" | "added";
+}): Promise<void> => {
+  try {
+    const [[mess], [actor]] = await Promise.all([
+      db
+        .select({ name: messesTable.name })
+        .from(messesTable)
+        .where(eq(messesTable.id, messId))
+        .limit(1),
+      db
+        .select({ name: usersTable.name })
+        .from(usersTable)
+        .where(eq(usersTable.id, actorUserId))
+        .limit(1),
+    ]);
+    const messName = mess?.name ?? "your mess";
+    const actorName = actor?.name ?? "A manager";
+    const [notification] = await db
+      .insert(notificationsTable)
+      .values({
+        messId,
+        userId: recipientUserId,
+        type: `manager_role_${kind}`,
+        title:
+          kind === "transferred"
+            ? "You are now the manager"
+            : "You are now a manager",
+        body:
+          kind === "transferred"
+            ? `${actorName} handed the manager role of ${messName} to you.`
+            : `${actorName} made you a manager of ${messName}.`,
+      })
+      .returning();
+    if (notification) await deliverNotifications([notification]);
+  } catch (err) {
+    logger.warn({ err }, "Could not deliver manager role notification");
+  }
 };
 
 /** Sends chat pushes without creating rows in the general notifications table. */

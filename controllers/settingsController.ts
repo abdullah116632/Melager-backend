@@ -11,6 +11,7 @@ import {
 } from "../db/dbConfig.js";
 import type { AuthedRequest } from "../middleware/auth.js";
 import { sendSecurityOtpEmail } from "../lib/email.js";
+import { deliverManagerRolePush } from "../lib/notificationDelivery.js";
 import { createOtpChallenge, normalizeEmail } from "../utils/authUtils.js";
 import {
   OTP_COOLDOWN_ERROR,
@@ -467,7 +468,7 @@ export const transferAdmin = async (req: AuthedRequest, res: Response) => {
         ),
       );
 
-    return { ok: true } as const;
+    return { ok: true, newAdminUserId: newAdmin.userId } as const;
   });
 
   if ("error" in outcome) {
@@ -476,6 +477,12 @@ export const transferAdmin = async (req: AuthedRequest, res: Response) => {
   }
 
   res.json({ message: "Admin role transferred successfully" });
+  void deliverManagerRolePush({
+    messId,
+    recipientUserId: outcome.newAdminUserId,
+    actorUserId: userId,
+    kind: "transferred",
+  });
 };
 
 // POST /api/settings/security/add-co-admin — grant admin to a member without revoking current admin
@@ -528,6 +535,12 @@ export const addCoAdmin = async (req: AuthedRequest, res: Response) => {
   await clearSecurityOtp(userId, "add_co_admin");
 
   res.json({ message: "Admin privileges granted successfully" });
+  void deliverManagerRolePush({
+    messId,
+    recipientUserId: consumer.userId,
+    actorUserId: userId,
+    kind: "added",
+  });
 };
 
 // POST /api/settings/security/remove-self-admin — revoke the caller's own admin role

@@ -10,6 +10,7 @@ import {
 } from "../db/dbConfig.js";
 import type { AuthedRequest } from "../middleware/auth.js";
 import { sendNewEmailVerificationOtp } from "../lib/email.js";
+import { deliverManagerRolePush } from "../lib/notificationDelivery.js";
 import {
   createOtpChallenge,
   isValidEmail,
@@ -237,6 +238,12 @@ export const addCoAdminV2 = async (req: AuthedRequest, res: Response) => {
     .where(eq(consumersTable.id, consumer.id));
 
   res.json({ message: "Admin privileges granted successfully" });
+  void deliverManagerRolePush({
+    messId,
+    recipientUserId: consumer.userId,
+    actorUserId: userId,
+    kind: "added",
+  });
 };
 
 // POST /api/v2/settings/security/add-admin — hands the caller's own admin
@@ -388,6 +395,12 @@ export const transferAdminV2 = async (req: AuthedRequest, res: Response) => {
   }
 
   res.json({ message: "Admin role transferred successfully" });
+  void deliverManagerRolePush({
+    messId,
+    recipientUserId: target.userId,
+    actorUserId: userId,
+    kind: "transferred",
+  });
 };
 
 // POST /api/v2/settings/security/remove-self-admin — revokes the caller's
