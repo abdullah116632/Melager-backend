@@ -21,6 +21,7 @@ import {
   messageReadStatesTable,
   messagesTable,
   usersTable,
+  type MessageAttachment,
 } from "../db/dbConfig.js";
 import type { AuthedRequest } from "../middleware/auth.js";
 import { resolveMessAccess } from "../utils/messAccessUtils.js";
@@ -54,6 +55,8 @@ const messageColumns = {
   replyToSenderUserId: quotedMessages.senderUserId,
   replyToSenderName: quotedSenders.name,
   replyToBody: quotedMessages.body,
+  // The quoted file's description, so a reply to a photo or file can show it.
+  replyToAttachment: quotedMessages.attachment,
 };
 
 export interface ReplySnapshot {
@@ -61,6 +64,7 @@ export interface ReplySnapshot {
   replyToSenderUserId: number;
   replyToSenderName: string;
   replyToBody: string;
+  replyToAttachment: MessageAttachment | null;
 }
 
 export const EMPTY_REPLY = {
@@ -68,6 +72,7 @@ export const EMPTY_REPLY = {
   replyToSenderUserId: null,
   replyToSenderName: null,
   replyToBody: null,
+  replyToAttachment: null,
 } as const;
 
 /**
@@ -88,6 +93,7 @@ export const loadReplySnapshot = async (
       senderUserId: messagesTable.senderUserId,
       senderName: usersTable.name,
       body: messagesTable.body,
+      attachment: messagesTable.attachment,
     })
     .from(messagesTable)
     .innerJoin(usersTable, eq(messagesTable.senderUserId, usersTable.id))
@@ -104,6 +110,7 @@ export const loadReplySnapshot = async (
     replyToSenderUserId: quoted.senderUserId,
     replyToSenderName: quoted.senderName,
     replyToBody: quoted.body,
+    replyToAttachment: quoted.attachment ?? null,
   };
 };
 
